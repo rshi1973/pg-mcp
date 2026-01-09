@@ -168,7 +168,6 @@ class QueryOrchestrator:
             >>> if response.success:
             ...     print(f"Found {response.data.row_count} rows")
         """
-        # Generate request_id for full-chain tracing
         request_id = str(uuid.uuid4())
         logger.info(
             "Starting query execution",
@@ -176,152 +175,263 @@ class QueryOrchestrator:
         )
 
         try:
-            # Step 1: Resolve database name
+            # Step 1: Load schema
             database_name = self._resolve_database(request.database)
-            logger.debug(
-                "Resolved database",
-                extra={"request_id": request_id, "database": database_name},
-            )
+            schema = await self._load_schema(database_name, request_id)
 
-            # Step 2: Get schema from cache
-            schema = self.schema_cache.get(database_name)
-            if schema is None:
-                # Schema not in cache, load it
-                pool = self.pools.get(database_name)
-                if pool is None:
-                    raise DatabaseError(
-                        message=f"No connection pool available for database '{database_name}'",
-                        details={"database": database_name},
-                    )
-                try:
-                    schema = await self.schema_cache.load(database_name, pool)
-                except Exception as e:
-                    raise SchemaLoadError(
-                        message=f"Failed to load schema for database '{database_name}': {e!s}",
-                        details={"database": database_name, "error": str(e)},
-                    ) from e
-
-            logger.debug(
-                "Schema loaded",
-                extra={
-                    "request_id": request_id,
-                    "database": database_name,
-                    "tables": len(schema.tables),
-                },
-            )
-
-            # Step 3: Generate and validate SQL with retry logic
+            # Step 2: Generate and validate SQL
             generated_sql, validation_result, tokens_used = await self._generate_sql_with_retry(
                 question=request.question,
                 schema=schema,
                 request_id=request_id,
             )
 
-            # Step 4: If return_type is SQL, return early
+            # Step 3: Handle SQL-only requests
             if request.return_type == ReturnType.SQL:
-                logger.info(
-                    "Returning SQL only",
-                    extra={"request_id": request_id, "sql_length": len(generated_sql)},
-                )
-                return QueryResponse(
-                    success=True,
-                    generated_sql=generated_sql,
-                    validation=validation_result,
-                    data=None,
-                    error=None,
-                    confidence=100,
-                    tokens_used=tokens_used,
+                return self._build_sql_only_response(
+                    generated_sql, validation_result, tokens_used, request_id
                 )
 
-            # Step 5: Execute SQL with circuit breaker protection
-            logger.debug("Executing SQL", extra={"request_id": request_id})
-            start_time = self._get_current_time_ms()
-
-            # Execute with circuit breaker protection
-            results, total_count = await self.executor_registry.execute_with_circuit_breaker(
-                database=database_name,
-                sql=generated_sql,
+            # Step 4: Execute and validate
+            query_result, confidence = await self._execute_and_validate(
+                database_name, generated_sql, request.question, request_id
             )
 
-            execution_time_ms = self._get_current_time_ms() - start_time
-            logger.info(
-                "SQL executed successfully",
-                extra={
-                    "request_id": request_id,
-                    "row_count": total_count,
-                    "execution_time_ms": execution_time_ms,
-                },
-            )
-
-            # Step 6: Validate results (non-blocking, failures don't fail the request)
-            result_confidence = await self._validate_results_safely(
-                question=request.question,
-                sql=generated_sql,
-                results=results,
-                row_count=total_count,
-                request_id=request_id,
-            )
-
-            # Step 7: Build successful response
-            query_result = QueryResult(
-                columns=list(results[0].keys()) if results else [],
-                rows=results,
-                row_count=len(results),  # Limited row count (after max_rows applied)
-                execution_time_ms=execution_time_ms,
-            )
-
-            return QueryResponse(
-                success=True,
-                generated_sql=generated_sql,
-                validation=validation_result,
-                data=query_result,
-                error=None,
-                confidence=result_confidence,
-                tokens_used=tokens_used,
+            # Step 5: Build success response
+            return self._build_success_response(
+                generated_sql, validation_result, query_result, confidence, tokens_used
             )
 
         except PgMcpError as e:
-            # Handle known application errors
-            logger.warning(
-                "Query execution failed with known error",
-                extra={
-                    "request_id": request_id,
-                    "error_code": e.code,
-                    "error_message": str(e),
-                },
-            )
-            return QueryResponse(
-                success=False,
-                generated_sql=None,
-                validation=None,
-                data=None,
-                error=ErrorDetail(
-                    code=e.code.value,
-                    message=e.message,
-                    details=e.details,
-                ),
-                confidence=0,
-                tokens_used=None,
-            )
+            return self._build_error_response(e, request_id)
         except Exception as e:
-            # Handle unexpected errors
-            logger.exception(
-                "Query execution failed with unexpected error",
-                extra={"request_id": request_id},
-            )
-            return QueryResponse(
-                success=False,
-                generated_sql=None,
-                validation=None,
-                data=None,
-                error=ErrorDetail(
-                    code=ErrorCode.INTERNAL_ERROR.value,
-                    message=f"Internal server error: {e!s}",
-                    details={"error_type": type(e).__name__},
-                ),
-                confidence=0,
-                tokens_used=None,
-            )
+            return self._build_unexpected_error_response(e, request_id)
+
+    async def _load_schema(self, database_name: str, request_id: str) -> Any:
+        """Load schema from cache or database.
+
+        Args:
+            database_name: Name of the database.
+            request_id: Request ID for tracking.
+
+        Returns:
+            DatabaseSchema: Loaded schema.
+
+        Raises:
+            DatabaseError: If pool is not available.
+            SchemaLoadError: If schema loading fails.
+        """
+        logger.debug(
+            "Resolved database",
+            extra={"request_id": request_id, "database": database_name},
+        )
+
+        schema = self.schema_cache.get(database_name)
+        if schema is None:
+            # Schema not in cache, load it
+            pool = self.pools.get(database_name)
+            if pool is None:
+                raise DatabaseError(
+                    message=f"No connection pool available for database '{database_name}'",
+                    details={"database": database_name},
+                )
+            try:
+                schema = await self.schema_cache.load(database_name, pool)
+            except Exception as e:
+                raise SchemaLoadError(
+                    message=f"Failed to load schema for database '{database_name}': {e!s}",
+                    details={"database": database_name, "error": str(e)},
+                ) from e
+
+        logger.debug(
+            "Schema loaded",
+            extra={
+                "request_id": request_id,
+                "database": database_name,
+                "tables": len(schema.tables),
+            },
+        )
+        return schema
+
+    def _build_sql_only_response(
+        self,
+        generated_sql: str,
+        validation_result: ValidationResult,
+        tokens_used: int | None,
+        request_id: str,
+    ) -> QueryResponse:
+        """Build response for SQL-only requests.
+
+        Args:
+            generated_sql: Generated SQL query.
+            validation_result: Validation result.
+            tokens_used: Number of tokens used.
+            request_id: Request ID for tracking.
+
+        Returns:
+            QueryResponse: Response with SQL only.
+        """
+        logger.info(
+            "Returning SQL only",
+            extra={"request_id": request_id, "sql_length": len(generated_sql)},
+        )
+        return QueryResponse(
+            success=True,
+            generated_sql=generated_sql,
+            validation=validation_result,
+            data=None,
+            error=None,
+            confidence=100,
+            tokens_used=tokens_used,
+        )
+
+    async def _execute_and_validate(
+        self,
+        database_name: str,
+        generated_sql: str,
+        question: str,
+        request_id: str,
+    ) -> tuple[QueryResult, int]:
+        """Execute SQL and validate results.
+
+        Args:
+            database_name: Name of the database.
+            generated_sql: Generated SQL query.
+            question: Original user question.
+            request_id: Request ID for tracking.
+
+        Returns:
+            tuple: (QueryResult, confidence_score)
+        """
+        logger.debug("Executing SQL", extra={"request_id": request_id})
+        start_time = self._get_current_time_ms()
+
+        # Execute with circuit breaker protection
+        results, total_count = await self.executor_registry.execute_with_circuit_breaker(
+            database=database_name,
+            sql=generated_sql,
+        )
+
+        execution_time_ms = self._get_current_time_ms() - start_time
+        logger.info(
+            "SQL executed successfully",
+            extra={
+                "request_id": request_id,
+                "row_count": total_count,
+                "execution_time_ms": execution_time_ms,
+            },
+        )
+
+        # Validate results (non-blocking)
+        confidence = await self._validate_results_safely(
+            question=question,
+            sql=generated_sql,
+            results=results,
+            row_count=total_count,
+            request_id=request_id,
+        )
+
+        # Build query result
+        query_result = QueryResult(
+            columns=list(results[0].keys()) if results else [],
+            rows=results,
+            row_count=len(results),
+            execution_time_ms=execution_time_ms,
+        )
+
+        return query_result, confidence
+
+    def _build_success_response(
+        self,
+        generated_sql: str,
+        validation_result: ValidationResult,
+        query_result: QueryResult,
+        confidence: int,
+        tokens_used: int | None,
+    ) -> QueryResponse:
+        """Build successful query response.
+
+        Args:
+            generated_sql: Generated SQL query.
+            validation_result: Validation result.
+            query_result: Query execution result.
+            confidence: Result confidence score.
+            tokens_used: Number of tokens used.
+
+        Returns:
+            QueryResponse: Successful response.
+        """
+        return QueryResponse(
+            success=True,
+            generated_sql=generated_sql,
+            validation=validation_result,
+            data=query_result,
+            error=None,
+            confidence=confidence,
+            tokens_used=tokens_used,
+        )
+
+    def _build_error_response(self, error: PgMcpError, request_id: str) -> QueryResponse:
+        """Build error response for known application errors.
+
+        Args:
+            error: Application error.
+            request_id: Request ID for tracking.
+
+        Returns:
+            QueryResponse: Error response.
+        """
+        logger.warning(
+            "Query execution failed with known error",
+            extra={
+                "request_id": request_id,
+                "error_code": error.code,
+                "error_message": str(error),
+            },
+        )
+        return QueryResponse(
+            success=False,
+            generated_sql=None,
+            validation=None,
+            data=None,
+            error=ErrorDetail(
+                code=error.code.value,
+                message=error.message,
+                details=error.details,
+            ),
+            confidence=0,
+            tokens_used=None,
+        )
+
+    def _build_unexpected_error_response(
+        self, error: Exception, request_id: str
+    ) -> QueryResponse:
+        """Build error response for unexpected errors.
+
+        Args:
+            error: Unexpected error.
+            request_id: Request ID for tracking.
+
+        Returns:
+            QueryResponse: Error response.
+        """
+        logger.exception(
+            "Query execution failed with unexpected error",
+            extra={"request_id": request_id},
+        )
+        return QueryResponse(
+            success=False,
+            generated_sql=None,
+            validation=None,
+            data=None,
+            error=ErrorDetail(
+                code=ErrorCode.INTERNAL_ERROR.value,
+                message=f"Internal server error: {error!s}",
+                details={"error_type": type(error).__name__},
+            ),
+            confidence=0,
+            tokens_used=None,
+        )
 
     def _resolve_database(self, database: str | None) -> str:
         """Resolve database name from request or auto-select.

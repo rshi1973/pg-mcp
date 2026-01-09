@@ -43,6 +43,253 @@ _circuit_breaker: CircuitBreaker | None = None
 _rate_limiter: MultiRateLimiter | None = None
 
 
+async def _initialize_settings() -> Settings:
+    """Load and configure application settings.
+
+    Returns:
+        Settings: Loaded application settings.
+    """
+    logger.info("Loading configuration...")
+    settings = Settings()
+
+    # Configure logging
+    logger.info("Configuring logging...")
+    configure_logging(
+        level=settings.observability.log_level,
+        log_format=settings.observability.log_format,
+        enable_sensitive_filter=True,
+    )
+
+    logger.info(
+        "Configuration loaded",
+        extra={
+            "environment": settings.environment,
+            "log_level": settings.observability.log_level,
+        },
+    )
+    return settings
+
+
+async def _initialize_database_pools(settings: Settings) -> dict[str, Pool]:
+    """Create database connection pools.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        dict: Mapping of database names to connection pools.
+    """
+    logger.info("Creating database connection pools...")
+    pools = {}
+    pool = await create_pool(settings.database)
+    pools[settings.database.name] = pool
+    logger.info(
+        f"Created connection pool for database '{settings.database.name}'",
+        extra={
+            "min_size": settings.database.min_pool_size,
+            "max_size": settings.database.max_pool_size,
+        },
+    )
+    return pools
+
+
+async def _initialize_schema_cache(
+    settings: Settings,
+    pools: dict[str, Pool],
+) -> SchemaCache:
+    """Initialize and populate schema cache.
+
+    Args:
+        settings: Application settings.
+        pools: Database connection pools.
+
+    Returns:
+        SchemaCache: Initialized schema cache.
+    """
+    logger.info("Initializing schema cache...")
+    schema_cache = SchemaCache(settings.cache)
+
+    for db_name, pool in pools.items():
+        logger.info(f"Loading schema for database '{db_name}'...")
+        schema = await schema_cache.load(db_name, pool)
+        logger.info(
+            f"Schema loaded for '{db_name}'",
+            extra={"tables": len(schema.tables)},
+        )
+
+    return schema_cache
+
+
+async def _initialize_metrics(settings: Settings) -> MetricsCollector:
+    """Initialize metrics collector and HTTP server.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        MetricsCollector: Initialized metrics collector.
+    """
+    logger.info("Initializing metrics collector...")
+    metrics = MetricsCollector()
+
+    if settings.observability.metrics_enabled:
+        from prometheus_client import start_http_server
+
+        start_http_server(settings.observability.metrics_port)
+        logger.info(f"Metrics server started on port {settings.observability.metrics_port}")
+
+    return metrics
+
+
+async def _initialize_services(
+    settings: Settings,
+    pools: dict[str, Pool],
+) -> dict[str, Any]:
+    """Initialize all service components.
+
+    Args:
+        settings: Application settings.
+        pools: Database connection pools.
+
+    Returns:
+        dict: Dictionary containing all initialized services.
+    """
+    logger.info("Initializing service components...")
+
+    # SQL Generator
+    sql_generator = SQLGenerator(settings.gemini)
+
+    # SQL Validator
+    sql_validator = SQLValidator(
+        config=settings.security,
+        blocked_tables=None,
+        blocked_columns=None,
+        allow_explain=False,
+        database=settings.database.name,
+    )
+
+    # Executor Registry
+    executor_registry = ExecutorRegistry(
+        security_config=settings.security,
+        db_config=settings.database,
+        resilience_config=settings.resilience,
+    )
+
+    # Register all database pools
+    for db_name, pool in pools.items():
+        executor_registry.register_pool(db_name, pool)
+        logger.info(f"Registered executor for database '{db_name}'")
+
+    # Result Validator
+    result_validator = ResultValidator(
+        gemini_config=settings.gemini,
+        validation_config=settings.validation,
+    )
+
+    return {
+        "sql_generator": sql_generator,
+        "sql_validator": sql_validator,
+        "executor_registry": executor_registry,
+        "result_validator": result_validator,
+    }
+
+
+async def _initialize_resilience_components(
+    settings: Settings,
+) -> tuple[CircuitBreaker, MultiRateLimiter]:
+    """Initialize resilience components.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        tuple: (CircuitBreaker, MultiRateLimiter)
+    """
+    logger.info("Initializing resilience components...")
+
+    circuit_breaker = CircuitBreaker(
+        failure_threshold=settings.resilience.circuit_breaker_threshold,
+        recovery_timeout=settings.resilience.circuit_breaker_timeout,
+    )
+
+    rate_limiter = MultiRateLimiter(
+        query_limit=10,  # Can be made configurable
+        llm_limit=5,  # Can be made configurable
+    )
+
+    return circuit_breaker, rate_limiter
+
+
+async def _initialize_orchestrator(
+    settings: Settings,
+    services: dict[str, Any],
+    schema_cache: SchemaCache,
+    pools: dict[str, Pool],
+) -> QueryOrchestrator:
+    """Create and configure query orchestrator.
+
+    Args:
+        settings: Application settings.
+        services: Dictionary of initialized services.
+        schema_cache: Schema cache instance.
+        pools: Database connection pools.
+
+    Returns:
+        QueryOrchestrator: Configured orchestrator.
+    """
+    logger.info("Creating query orchestrator...")
+
+    dependencies = OrchestratorDependencies(
+        sql_generator=services["sql_generator"],
+        sql_validator=services["sql_validator"],
+        executor_registry=services["executor_registry"],
+        result_validator=services["result_validator"],
+        schema_cache=schema_cache,
+        pools=pools,
+    )
+    config = OrchestratorConfig(
+        resilience=settings.resilience,
+        validation=settings.validation,
+    )
+
+    return QueryOrchestrator(dependencies=dependencies, config=config)
+
+
+async def _shutdown_server(
+    schema_cache: SchemaCache | None,
+    pools: dict[str, Pool] | None,
+) -> None:
+    """Gracefully shutdown server components.
+
+    Args:
+        schema_cache: Schema cache to stop.
+        pools: Database pools to close.
+    """
+    logger.info("Starting PostgreSQL MCP Server shutdown...")
+
+    # Stop schema auto-refresh
+    if schema_cache is not None:
+        try:
+            import asyncio
+
+            await asyncio.wait_for(schema_cache.stop_auto_refresh(), timeout=3.0)
+            logger.info("Schema auto-refresh stopped")
+        except asyncio.TimeoutError:
+            logger.warning("Schema auto-refresh stop timed out")
+        except Exception as e:
+            logger.warning(f"Error stopping schema auto-refresh: {e!s}")
+
+    # Close database pools
+    if pools is not None:
+        try:
+            await close_pools(pools, timeout=5.0)
+            logger.info("Database connection pools closed")
+        except Exception as e:
+            logger.error(f"Error closing connection pools: {e!s}")
+
+    logger.info("PostgreSQL MCP Server shutdown complete")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-arg]
     """Lifespan context manager for server initialization and cleanup.
@@ -79,141 +326,14 @@ async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-a
     logger.info("Starting PostgreSQL MCP Server initialization...")
 
     try:
-        # 1. Load Settings
-        logger.info("Loading configuration...")
-        _settings = Settings()
-
-        # 2. Configure logging
-        logger.info("Configuring logging...")
-        configure_logging(
-            level=_settings.observability.log_level,
-            log_format=_settings.observability.log_format,
-            enable_sensitive_filter=True,
-        )
-
-        logger.info(
-            "Configuration loaded",
-            extra={
-                "environment": _settings.environment,
-                "log_level": _settings.observability.log_level,
-            },
-        )
-
-        # 3. Create database connection pools
-        logger.info("Creating database connection pools...")
-        _pools = {}
-        # Note: For single database configuration, we use the main database config
-        pool = await create_pool(_settings.database)
-        _pools[_settings.database.name] = pool
-        logger.info(
-            f"Created connection pool for database '{_settings.database.name}'",
-            extra={
-                "min_size": _settings.database.min_pool_size,
-                "max_size": _settings.database.max_pool_size,
-            },
-        )
-
-        # 4. Load Schema cache
-        logger.info("Initializing schema cache...")
-        _schema_cache = SchemaCache(_settings.cache)
-
-        for db_name, pool in _pools.items():
-            logger.info(f"Loading schema for database '{db_name}'...")
-            schema = await _schema_cache.load(db_name, pool)
-            logger.info(
-                f"Schema loaded for '{db_name}'",
-                extra={
-                    "tables": len(schema.tables),
-                },
-            )
-
-        # Optional: Start schema auto-refresh
-        # Disabled by default to avoid unnecessary background tasks
-        # Uncomment to enable:
-        # if _settings.cache.enabled:
-        #     logger.info("Starting schema auto-refresh...")
-        #     await _schema_cache.start_auto_refresh(
-        #         interval_minutes=60,  # Refresh every hour
-        #         pools=_pools,
-        #     )
-
-        # 5. Initialize metrics collector
-        logger.info("Initializing metrics collector...")
-        _metrics = MetricsCollector()
-
-        # Start metrics HTTP server if enabled
-        if _settings.observability.metrics_enabled:
-            from prometheus_client import start_http_server
-
-            start_http_server(_settings.observability.metrics_port)
-            logger.info(f"Metrics server started on port {_settings.observability.metrics_port}")
-
-        # 6. Create service components
-        logger.info("Initializing service components...")
-
-        # SQL Generator
-        sql_generator = SQLGenerator(_settings.gemini)
-
-        # SQL Validator
-        sql_validator = SQLValidator(
-            config=_settings.security,
-            blocked_tables=None,  # Can be configured via settings if needed
-            blocked_columns=None,  # Can be configured via settings if needed
-            allow_explain=False,
-            database=_settings.database.name,
-        )
-
-        # Executor Registry (manages per-database executors)
-        executor_registry = ExecutorRegistry(
-            security_config=_settings.security,
-            db_config=_settings.database,
-            resilience_config=_settings.resilience,
-        )
-
-        # Register all database pools with the executor registry
-        for db_name, pool in _pools.items():
-            executor_registry.register_pool(db_name, pool)
-            logger.info(f"Registered executor for database '{db_name}'")
-
-        # Result Validator
-        result_validator = ResultValidator(
-            gemini_config=_settings.gemini,
-            validation_config=_settings.validation,
-        )
-
-        # 7. Initialize resilience components
-        logger.info("Initializing resilience components...")
-
-        # Circuit Breaker for LLM calls
-        _circuit_breaker = CircuitBreaker(
-            failure_threshold=_settings.resilience.circuit_breaker_threshold,
-            recovery_timeout=_settings.resilience.circuit_breaker_timeout,
-        )
-
-        # Rate Limiter
-        _rate_limiter = MultiRateLimiter(
-            query_limit=10,  # Can be made configurable
-            llm_limit=5,  # Can be made configurable
-        )
-
-        # 8. Create QueryOrchestrator
-        logger.info("Creating query orchestrator...")
-        dependencies = OrchestratorDependencies(
-            sql_generator=sql_generator,
-            sql_validator=sql_validator,
-            executor_registry=executor_registry,
-            result_validator=result_validator,
-            schema_cache=_schema_cache,
-            pools=_pools,
-        )
-        config = OrchestratorConfig(
-            resilience=_settings.resilience,
-            validation=_settings.validation,
-        )
-        _orchestrator = QueryOrchestrator(
-            dependencies=dependencies,
-            config=config,
-        )
+        # Initialize all components
+        _settings = await _initialize_settings()
+        _pools = await _initialize_database_pools(_settings)
+        _schema_cache = await _initialize_schema_cache(_settings, _pools)
+        _metrics = await _initialize_metrics(_settings)
+        services = await _initialize_services(_settings, _pools)
+        _circuit_breaker, _rate_limiter = await _initialize_resilience_components(_settings)
+        _orchestrator = await _initialize_orchestrator(_settings, services, _schema_cache, _pools)
 
         logger.info("PostgreSQL MCP Server initialization complete!")
         logger.info(
@@ -225,37 +345,10 @@ async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-a
             },
         )
 
-        # Yield to run the server
         yield
 
     finally:
-        # Shutdown sequence
-        logger.info("Starting PostgreSQL MCP Server shutdown...")
-
-        # Stop schema auto-refresh with timeout
-        if _schema_cache is not None:
-            try:
-                import asyncio
-                await asyncio.wait_for(
-                    _schema_cache.stop_auto_refresh(),
-                    timeout=3.0
-                )
-                logger.info("Schema auto-refresh stopped")
-            except asyncio.TimeoutError:
-                logger.warning("Schema auto-refresh stop timed out")
-            except Exception as e:
-                logger.warning(f"Error stopping schema auto-refresh: {e!s}")
-
-        # Close database connection pools with timeout
-        if _pools is not None:
-            try:
-                # Use 5 second timeout for graceful shutdown
-                await close_pools(_pools, timeout=5.0)
-                logger.info("Database connection pools closed")
-            except Exception as e:
-                logger.error(f"Error closing connection pools: {e!s}")
-
-        logger.info("PostgreSQL MCP Server shutdown complete")
+        await _shutdown_server(_schema_cache, _pools)
 
 
 # Create FastMCP server instance with lifespan
