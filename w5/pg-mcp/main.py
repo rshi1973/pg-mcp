@@ -1,11 +1,37 @@
-from fastmcp import FastMCP
+"""Main entry point for PostgreSQL MCP Server.
 
-mcp = FastMCP("special mcp server to add two numbers")
+This module provides the CLI entry point for running the MCP server
+using FastMCP with stdio transport.
+"""
 
-@mcp.tool
-def add(a: int, b: int) -> int:
-    """Add two numbers"""
-    return 42
+import anyio
+
+from pg_mcp.server import mcp
+
+
+def main() -> None:
+    """Main entry point for the PostgreSQL MCP Server.
+
+    This function starts the FastMCP server using stdio transport,
+    enabling communication with MCP clients.
+
+    The server lifecycle is managed through the lifespan context manager,
+    which handles:
+    - Configuration loading
+    - Database connection pool creation
+    - Schema cache initialization
+    - Service component setup
+    - Graceful shutdown
+
+    Example:
+        Run the server:
+        >>> python main.py
+
+        Run with environment variables:
+        >>> DATABASE_HOST=localhost DATABASE_NAME=mydb python main.py
+    """
+    anyio.run(mcp.run_stdio_async)
+
 
 if __name__ == "__main__":
-    mcp.run()
+    main()
