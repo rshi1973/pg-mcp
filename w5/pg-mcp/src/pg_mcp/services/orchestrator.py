@@ -31,6 +31,7 @@ from pg_mcp.models.query import (
     ValidationResult,
 )
 from pg_mcp.resilience.circuit_breaker import CircuitBreaker
+from pg_mcp.services.executor_registry import ExecutorRegistry
 from pg_mcp.services.result_validator import ResultValidator
 from pg_mcp.services.sql_executor import SQLExecutor
 from pg_mcp.services.sql_generator import SQLGenerator
@@ -67,7 +68,7 @@ class QueryOrchestrator:
         self,
         sql_generator: SQLGenerator,
         sql_validator: SQLValidator,
-        sql_executor: SQLExecutor,
+        executor_registry: ExecutorRegistry,
         result_validator: ResultValidator,
         schema_cache: SchemaCache,
         pools: dict[str, Pool],
@@ -79,7 +80,7 @@ class QueryOrchestrator:
         Args:
             sql_generator: SQL generation service.
             sql_validator: SQL validation service.
-            sql_executor: SQL execution service.
+            executor_registry: Executor registry for database-specific executors.
             result_validator: Result validation service.
             schema_cache: Schema cache instance.
             pools: Dictionary mapping database names to connection pools.
@@ -88,7 +89,7 @@ class QueryOrchestrator:
         """
         self.sql_generator = sql_generator
         self.sql_validator = sql_validator
-        self.sql_executor = sql_executor
+        self.executor_registry = executor_registry
         self.result_validator = result_validator
         self.schema_cache = schema_cache
         self.pools = pools
@@ -191,11 +192,15 @@ class QueryOrchestrator:
                     tokens_used=tokens_used,
                 )
 
-            # Step 5: Execute SQL
+            # Step 5: Execute SQL with circuit breaker protection
             logger.debug("Executing SQL", extra={"request_id": request_id})
             start_time = self._get_current_time_ms()
 
-            results, total_count = await self.sql_executor.execute(generated_sql)
+            # Execute with circuit breaker protection
+            results, total_count = await self.executor_registry.execute_with_circuit_breaker(
+                database=database_name,
+                sql=generated_sql,
+            )
 
             execution_time_ms = self._get_current_time_ms() - start_time
             logger.info(

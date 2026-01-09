@@ -28,12 +28,12 @@ class MetricsCollector:
     """
 
     _instance: "MetricsCollector | None" = None
+    _initialized: bool = False
 
     def __new__(cls) -> "MetricsCollector":
         """Ensure singleton instance."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._initialize_metrics()
         return cls._instance
 
     def _initialize_metrics(self) -> None:
@@ -42,6 +42,11 @@ class MetricsCollector:
         Creates counters, histograms, and gauges for tracking various
         aspects of the MCP server operation.
         """
+        # Skip if already initialized
+        if MetricsCollector._initialized:
+            return
+        MetricsCollector._initialized = True
+
         # Query Metrics
         self.query_requests: Counter = Counter(
             "pg_mcp_query_requests_total",
@@ -69,9 +74,9 @@ class MetricsCollector:
             buckets=(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0),
         )
 
-        self.llm_tokens_used: Counter = Counter(
-            "pg_mcp_llm_tokens_used",
-            "Total number of tokens used by LLM",
+        self.llm_tokens_by_operation: Counter = Counter(
+            "pg_mcp_llm_tokens_by_operation_total",
+            "Total number of tokens used by LLM operation",
             labelnames=["operation"],
         )
 
@@ -100,6 +105,44 @@ class MetricsCollector:
             "pg_mcp_schema_cache_age_seconds",
             "Age of the schema cache in seconds",
             labelnames=["database"],
+        )
+
+        # Rate Limiter Metrics
+        self.rate_limiter_active_requests: Gauge = Gauge(
+            "pg_mcp_rate_limiter_active_requests",
+            "Number of active requests in rate limiter",
+        )
+
+        self.rate_limiter_rejections_total: Counter = Counter(
+            "pg_mcp_rate_limiter_rejections_total",
+            "Total number of rate limiter rejections",
+        )
+
+        # Circuit Breaker Metrics
+        self.circuit_breaker_state: Gauge = Gauge(
+            "pg_mcp_circuit_breaker_state",
+            "Circuit breaker state (0=closed, 1=open, 2=half-open)",
+            labelnames=["database", "resource"],
+        )
+
+        self.circuit_breaker_state_changes_total: Counter = Counter(
+            "pg_mcp_circuit_breaker_state_changes_total",
+            "Total number of circuit breaker state changes",
+            labelnames=["database", "resource", "from_state", "to_state"],
+        )
+
+        # LLM Generation Metrics (additional)
+        self.llm_generation_duration_seconds: Histogram = Histogram(
+            "pg_mcp_llm_generation_duration_seconds",
+            "LLM SQL generation duration in seconds",
+            labelnames=["model"],
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+        )
+
+        self.llm_tokens_used_total: Counter = Counter(
+            "pg_mcp_llm_tokens_used_total",
+            "Total number of LLM tokens used",
+            labelnames=["model", "type"],
         )
 
     def start_metrics_server(self, port: int) -> None:
@@ -148,7 +191,7 @@ class MetricsCollector:
             operation: Type of LLM operation.
             tokens: Number of tokens used.
         """
-        self.llm_tokens_used.labels(operation=operation).inc(tokens)
+        self.llm_tokens_by_operation.labels(operation=operation).inc(tokens)
 
     def increment_sql_rejected(self, reason: str) -> None:
         """Increment SQL rejection counter.
@@ -184,6 +227,62 @@ class MetricsCollector:
         """
         self.schema_cache_age.labels(database=database).set(age_seconds)
 
+    def set_rate_limiter_active_requests(self, count: int) -> None:
+        """Set active rate limiter requests count.
+
+        Args:
+            count: Number of active requests.
+        """
+        self.rate_limiter_active_requests.set(count)
+
+    def increment_rate_limiter_rejections(self) -> None:
+        """Increment rate limiter rejections counter."""
+        self.rate_limiter_rejections_total.inc()
+
+    def set_circuit_breaker_state(self, database: str, resource: str, state: int) -> None:
+        """Set circuit breaker state.
+
+        Args:
+            database: Database name.
+            resource: Resource type (database, llm).
+            state: State value (0=closed, 1=open, 2=half-open).
+        """
+        self.circuit_breaker_state.labels(database=database, resource=resource).set(state)
+
+    def increment_circuit_breaker_state_change(
+        self, database: str, resource: str, from_state: str, to_state: str
+    ) -> None:
+        """Increment circuit breaker state change counter.
+
+        Args:
+            database: Database name.
+            resource: Resource type (database, llm).
+            from_state: Previous state.
+            to_state: New state.
+        """
+        self.circuit_breaker_state_changes_total.labels(
+            database=database, resource=resource, from_state=from_state, to_state=to_state
+        ).inc()
+
+    def observe_llm_generation_duration(self, model: str, duration: float) -> None:
+        """Record LLM generation duration.
+
+        Args:
+            model: Model name.
+            duration: Duration in seconds.
+        """
+        self.llm_generation_duration_seconds.labels(model=model).observe(duration)
+
+    def increment_llm_tokens_total(self, model: str, token_type: str, tokens: int) -> None:
+        """Increment LLM tokens used counter.
+
+        Args:
+            model: Model name.
+            token_type: Token type (prompt, completion).
+            tokens: Number of tokens.
+        """
+        self.llm_tokens_used_total.labels(model=model, type=token_type).inc(tokens)
+
     def reset_all_metrics(self) -> None:
         """Reset all metrics to initial state.
 
@@ -196,3 +295,4 @@ class MetricsCollector:
 
 # Singleton instance
 metrics = MetricsCollector()
+metrics._initialize_metrics()

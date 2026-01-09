@@ -107,6 +107,38 @@ class SecurityConfig(BaseSettings):
         default="public", description="Safe search_path to set during query execution"
     )
 
+    # Access Control
+    allowed_tables: list[str] = Field(
+        default_factory=list,
+        description="Whitelist of allowed tables (empty = all allowed)"
+    )
+    blocked_tables: list[str] = Field(
+        default_factory=list,
+        description="Blacklist of blocked tables"
+    )
+    column_restrictions: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Table -> blocked columns mapping"
+    )
+
+    # EXPLAIN Policy
+    explain_threshold: int = Field(
+        default=10000,
+        ge=0,
+        le=1000000,
+        description="Query complexity threshold for EXPLAIN"
+    )
+    max_query_cost: int = Field(
+        default=100000,
+        ge=0,
+        le=10000000,
+        description="Maximum allowed query cost"
+    )
+    explain_enabled: bool = Field(
+        default=True,
+        description="Enable EXPLAIN policy enforcement"
+    )
+
     @field_validator("blocked_functions", mode="before")
     @classmethod
     def parse_blocked_functions(cls, v: str | list[str]) -> list[str]:
@@ -172,6 +204,20 @@ class ResilienceConfig(BaseSettings):
         default=60.0, ge=10.0, le=300.0, description="Circuit breaker timeout in seconds"
     )
 
+    # Rate Limiting
+    max_concurrent: int = Field(
+        default=10,
+        ge=1,
+        le=1000,
+        description="Maximum concurrent requests"
+    )
+    rate_limit_timeout: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        description="Rate limiter timeout in seconds"
+    )
+
 
 class ObservabilityConfig(BaseSettings):
     """Observability and monitoring configuration."""
@@ -186,6 +232,28 @@ class ObservabilityConfig(BaseSettings):
         default="INFO", description="Logging level"
     )
     log_format: Literal["json", "text"] = Field(default="text", description="Log format")
+
+    # Tracing
+    tracing_enabled: bool = Field(
+        default=False,
+        description="Enable distributed tracing"
+    )
+    tracing_endpoint: str = Field(
+        default="",
+        description="OTLP endpoint for traces (e.g., http://localhost:4317)"
+    )
+    tracing_sample_rate: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Trace sampling rate (0.0-1.0)"
+    )
+
+    # Metrics
+    metrics_host: str = Field(
+        default="0.0.0.0",
+        description="Metrics server bind address"
+    )
 
 
 class Settings(BaseSettings):

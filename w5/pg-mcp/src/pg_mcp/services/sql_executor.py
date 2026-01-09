@@ -13,8 +13,10 @@ from typing import Any
 import asyncpg
 from asyncpg import Connection, Pool
 
-from pg_mcp.config.settings import DatabaseConfig, SecurityConfig
-from pg_mcp.models.errors import DatabaseError, ExecutionTimeoutError
+from pg_mcp.config.settings import DatabaseConfig, ResilienceConfig, SecurityConfig
+from pg_mcp.models.errors import DatabaseError, ExecutionTimeoutError, SecurityViolationError
+from pg_mcp.resilience.retry import RetryStrategy, is_transient_error
+from pg_mcp.security.explain_policy import ExplainPolicy
 
 
 class SQLExecutor:
@@ -37,6 +39,7 @@ class SQLExecutor:
         pool: Pool,
         security_config: SecurityConfig,
         db_config: DatabaseConfig,
+        resilience_config: ResilienceConfig,
     ) -> None:
         """Initialize SQL executor.
 
@@ -44,10 +47,19 @@ class SQLExecutor:
             pool: asyncpg connection pool for database connections.
             security_config: Security configuration including timeouts and limits.
             db_config: Database configuration including connection parameters.
+            resilience_config: Resilience configuration for retry logic.
         """
         self.pool = pool
         self.security_config = security_config
         self.db_config = db_config
+        self.explain_policy = ExplainPolicy.from_config(security_config)
+
+        # Initialize retry strategy
+        self.retry_strategy = RetryStrategy(
+            max_retries=resilience_config.max_retries,
+            initial_delay=resilience_config.retry_delay,
+            backoff_factor=resilience_config.backoff_factor,
+        )
 
     async def execute(
         self,
@@ -91,6 +103,33 @@ class SQLExecutor:
         timeout = timeout or self.security_config.max_execution_time
         max_rows = max_rows or self.security_config.max_rows
 
+        # Wrap execution with retry logic
+        return await self.retry_strategy.execute(
+            lambda: self._execute_with_connection(sql, timeout, max_rows),
+            is_transient=is_transient_error,
+        )
+
+    async def _execute_with_connection(
+        self,
+        sql: str,
+        timeout: float,
+        max_rows: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Execute SQL with connection management (internal method).
+
+        Args:
+            sql: SQL query to execute.
+            timeout: Query timeout in seconds.
+            max_rows: Maximum rows to return.
+
+        Returns:
+            tuple: (results, total_row_count)
+
+        Raises:
+            ExecutionTimeoutError: If query execution exceeds timeout.
+            DatabaseError: If database operation fails.
+            SecurityViolationError: If query violates security policies.
+        """
         try:
             async with (
                 self.pool.acquire() as connection,
@@ -98,6 +137,19 @@ class SQLExecutor:
             ):
                 # Set session parameters for security
                 await self._set_session_params(connection, timeout)
+
+                # Check EXPLAIN policy if enabled
+                if self.explain_policy.enabled and self.explain_policy.should_explain(sql):
+                    is_acceptable, cost = await self.explain_policy.validate_cost(connection, sql)
+                    if not is_acceptable:
+                        raise SecurityViolationError(
+                            message=f"Query cost ({cost}) exceeds maximum ({self.explain_policy.max_cost})",
+                            details={
+                                "estimated_cost": cost,
+                                "max_cost": self.explain_policy.max_cost,
+                                "sql": sql[:200],
+                            },
+                        )
 
                 # Execute query with timeout
                 try:

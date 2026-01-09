@@ -12,6 +12,7 @@ from sqlglot import exp
 
 from pg_mcp.config.settings import SecurityConfig
 from pg_mcp.models.errors import SecurityViolationError, SQLParseError
+from pg_mcp.security.access_control import AccessControlPolicy, AccessControlValidator
 
 
 class SQLValidator:
@@ -80,6 +81,7 @@ class SQLValidator:
         blocked_tables: list[str] | None = None,
         blocked_columns: list[str] | None = None,
         allow_explain: bool = False,
+        database: str = "default",
     ) -> None:
         """Initialize SQL validator.
 
@@ -88,6 +90,7 @@ class SQLValidator:
             blocked_tables: Optional list of table names to block access to.
             blocked_columns: Optional list of column names to block access to.
             allow_explain: Whether to allow EXPLAIN statements.
+            database: Database name for access control policy.
         """
         self.config = config
         self.blocked_tables = {t.lower() for t in (blocked_tables or [])}
@@ -98,6 +101,10 @@ class SQLValidator:
         self.blocked_functions = self.BUILTIN_DANGEROUS_FUNCTIONS | {
             f.lower() for f in config.blocked_functions
         }
+
+        # Initialize access control validator and policy
+        self.access_control_validator = AccessControlValidator()
+        self.access_control_policy = AccessControlPolicy.from_config(database, config)
 
     def validate(self, sql: str) -> tuple[bool, str | None]:
         """Validate SQL query for security compliance.
@@ -191,6 +198,10 @@ class SQLValidator:
             raise SecurityViolationError(error)
 
         if error := self._check_subquery_safety(statement):
+            raise SecurityViolationError(error)
+
+        # Perform access control validation using pglast
+        if error := self._check_access_control(sql):
             raise SecurityViolationError(error)
 
     def _check_statement_type(self, statement: exp.Expression) -> str | None:
@@ -353,3 +364,23 @@ class SQLValidator:
             return sorted(set(tables))
         except Exception as e:
             raise SQLParseError(f"Failed to extract tables: {e}") from e
+
+    def _check_access_control(self, sql: str) -> str | None:
+        """Check SQL against access control policy using pglast.
+
+        Args:
+            sql: SQL query string.
+
+        Returns:
+            Error message if check fails, None otherwise.
+        """
+        try:
+            result = self.access_control_validator.validate(sql, self.access_control_policy)
+            if not result.is_valid:
+                # Return first violation
+                return result.violations[0] if result.violations else "Access control violation"
+            return None
+        except SQLParseError:
+            # If pglast parsing fails, log warning but don't block
+            # (sqlglot already validated the SQL)
+            return None

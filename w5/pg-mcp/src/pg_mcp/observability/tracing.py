@@ -303,3 +303,182 @@ def get_tracing_logger(name: str) -> TracingLogger:
         >>> logger.info("Operation started")
     """
     return TracingLogger(name)
+
+
+# OpenTelemetry Integration
+try:
+    from contextlib import contextmanager
+    from typing import Iterator
+
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
+    from opentelemetry.trace import Span, SpanKind, Status, StatusCode, Tracer
+
+    _OPENTELEMETRY_AVAILABLE = True
+except ImportError:
+    _OPENTELEMETRY_AVAILABLE = False
+    Tracer = Any  # type: ignore[misc,assignment]
+    Span = Any  # type: ignore[misc,assignment]
+    SpanKind = Any  # type: ignore[misc,assignment]
+    StatusCode = Any  # type: ignore[misc,assignment]
+
+
+def setup_opentelemetry_tracing(
+    service_name: str,
+    endpoint: str | None = None,
+    sample_rate: float = 1.0,
+) -> Tracer | None:
+    """Setup OpenTelemetry distributed tracing.
+
+    Args:
+        service_name: Service name for traces.
+        endpoint: OTLP endpoint URL (e.g., http://localhost:4317).
+                 If None, exports to console.
+        sample_rate: Sampling rate (0.0-1.0). Default 1.0 (100%).
+
+    Returns:
+        Tracer instance if OpenTelemetry is available, None otherwise.
+
+    Example:
+        >>> tracer = setup_opentelemetry_tracing("pg-mcp", "http://localhost:4317", 0.1)
+    """
+    if not _OPENTELEMETRY_AVAILABLE:
+        return None
+
+    # Create tracer provider with sampling
+    sampler = TraceIdRatioBased(sample_rate)
+    provider = TracerProvider(sampler=sampler)
+
+    # Configure exporter
+    if endpoint:
+        # Export to OTLP collector (Jaeger, Tempo, etc.)
+        exporter = OTLPSpanExporter(endpoint=endpoint)
+    else:
+        # Export to console for development
+        exporter = ConsoleSpanExporter()
+
+    # Add batch span processor
+    processor = BatchSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+
+    # Set as global tracer provider
+    trace.set_tracer_provider(provider)
+
+    # Return tracer for this service
+    return trace.get_tracer(service_name)
+
+
+class OpenTelemetryContext:
+    """OpenTelemetry tracing context for request tracking.
+
+    This class manages trace spans for a single request, providing
+    context propagation and span lifecycle management.
+
+    Example:
+        >>> tracer = trace.get_tracer("pg-mcp")
+        >>> ctx = OpenTelemetryContext(request_id="123", tracer=tracer)
+        >>> with ctx.span("query.execute") as span:
+        ...     span.set_attribute("question", question)
+        ...     result = await process_query()
+    """
+
+    def __init__(self, request_id: str, tracer: Tracer) -> None:
+        """Initialize tracing context.
+
+        Args:
+            request_id: Unique request identifier.
+            tracer: OpenTelemetry tracer instance.
+        """
+        self.request_id = request_id
+        self.tracer = tracer
+        self.root_span: Span | None = None
+        self._span_stack: list[Span] = []
+
+    def create_span(
+        self,
+        name: str,
+        attributes: dict[str, Any] | None = None,
+        kind: Any = None,
+    ) -> Span:
+        """Create and start a new span.
+
+        Args:
+            name: Span name (e.g., "sql.generate", "database.query").
+            attributes: Optional span attributes.
+            kind: Span kind (INTERNAL, CLIENT, SERVER, etc.).
+
+        Returns:
+            Started span instance.
+        """
+        if not _OPENTELEMETRY_AVAILABLE:
+            return None  # type: ignore[return-value]
+
+        if kind is None:
+            kind = SpanKind.INTERNAL
+
+        span = self.tracer.start_span(name, kind=kind)
+
+        # Set request ID attribute
+        span.set_attribute("pg_mcp.request_id", self.request_id)
+
+        # Set additional attributes
+        if attributes:
+            for key, value in attributes.items():
+                span.set_attribute(key, value)
+
+        # Track root span
+        if self.root_span is None:
+            self.root_span = span
+
+        # Add to stack
+        self._span_stack.append(span)
+
+        return span
+
+    def end_span(self) -> None:
+        """End the current span and pop from stack."""
+        if self._span_stack:
+            span = self._span_stack.pop()
+            span.end()
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """Set attribute on current span."""
+        if self._span_stack:
+            self._span_stack[-1].set_attribute(key, value)
+
+    def record_exception(self, exception: Exception) -> None:
+        """Record exception on current span."""
+        if self._span_stack:
+            self._span_stack[-1].record_exception(exception)
+
+    def set_status(self, status_code: Any, description: str | None = None) -> None:
+        """Set status on current span."""
+        if self._span_stack and _OPENTELEMETRY_AVAILABLE:
+            status = Status(status_code, description)
+            self._span_stack[-1].set_status(status)
+
+    @contextmanager
+    def span(
+        self,
+        name: str,
+        attributes: dict[str, Any] | None = None,
+        kind: Any = None,
+    ) -> Iterator[Span | None]:
+        """Context manager for span lifecycle."""
+        if not _OPENTELEMETRY_AVAILABLE:
+            yield None
+            return
+
+        span = self.create_span(name, attributes, kind)
+        try:
+            yield span
+        except Exception as e:
+            span.record_exception(e)
+            if _OPENTELEMETRY_AVAILABLE:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+            raise
+        finally:
+            self.end_span()

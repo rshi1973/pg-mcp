@@ -20,6 +20,7 @@ from pg_mcp.observability.logging import configure_logging, get_logger
 from pg_mcp.observability.metrics import MetricsCollector
 from pg_mcp.resilience.circuit_breaker import CircuitBreaker
 from pg_mcp.resilience.rate_limiter import MultiRateLimiter
+from pg_mcp.services.executor_registry import ExecutorRegistry
 from pg_mcp.services.orchestrator import QueryOrchestrator
 from pg_mcp.services.result_validator import ResultValidator
 from pg_mcp.services.sql_executor import SQLExecutor
@@ -155,18 +156,20 @@ async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-a
             blocked_tables=None,  # Can be configured via settings if needed
             blocked_columns=None,  # Can be configured via settings if needed
             allow_explain=False,
+            database=_settings.database.name,
         )
 
-        # SQL Executor (create one per database)
-        sql_executors: dict[str, SQLExecutor] = {}
+        # Executor Registry (manages per-database executors)
+        executor_registry = ExecutorRegistry(
+            security_config=_settings.security,
+            db_config=_settings.database,
+            resilience_config=_settings.resilience,
+        )
+
+        # Register all database pools with the executor registry
         for db_name, pool in _pools.items():
-            executor = SQLExecutor(
-                pool=pool,
-                security_config=_settings.security,
-                db_config=_settings.database,
-            )
-            sql_executors[db_name] = executor
-            logger.info(f"Created SQL executor for database '{db_name}'")
+            executor_registry.register_pool(db_name, pool)
+            logger.info(f"Registered executor for database '{db_name}'")
 
         # Result Validator
         result_validator = ResultValidator(
@@ -194,7 +197,7 @@ async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-a
         _orchestrator = QueryOrchestrator(
             sql_generator=sql_generator,
             sql_validator=sql_validator,
-            sql_executor=sql_executors[_settings.database.name],  # Use primary executor
+            executor_registry=executor_registry,
             result_validator=result_validator,
             schema_cache=_schema_cache,
             pools=_pools,
@@ -352,14 +355,40 @@ async def query(
             },
         }
 
-    # Execute query through orchestrator
+    # Execute query through orchestrator with rate limiting
+    global _rate_limiter
+
+    if _rate_limiter is None:
+        return {
+            "success": False,
+            "error": {
+                "code": "SERVER_NOT_INITIALIZED",
+                "message": "Rate limiter not initialized",
+                "details": None,
+            },
+        }
+
     try:
-        response: QueryResponse = await _orchestrator.execute_query(request)
-        result = response.to_dict()
-        # Ensure tokens_used is always present
-        if "tokens_used" not in result:
-            result["tokens_used"] = 0
+        # Apply rate limiting
+        async with _rate_limiter.for_queries(timeout=_settings.resilience.rate_limit_timeout if _settings else 30.0):
+            response: QueryResponse = await _orchestrator.execute_query(request)
+            result = response.to_dict()
+            # Ensure tokens_used is always present
+            if "tokens_used" not in result:
+                result["tokens_used"] = 0
         return result
+    except TimeoutError:
+        # Rate limiter timeout
+        logger.warning("Rate limiter timeout exceeded")
+        return {
+            "success": False,
+            "error": {
+                "code": "RATE_LIMIT_TIMEOUT",
+                "message": "Too many concurrent requests. Please try again later.",
+                "details": {"max_concurrent": _settings.resilience.max_concurrent if _settings else 10},
+            },
+            "tokens_used": 0,
+        }
     except Exception as e:
         logger.exception("Unexpected error in query tool")
         return {
