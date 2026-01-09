@@ -3,8 +3,8 @@
 from pg_mcp.config.settings import (
     CacheConfig,
     DatabaseConfig,
+    GeminiConfig,
     ObservabilityConfig,
-    OpenAIConfig,
     ResilienceConfig,
     SecurityConfig,
     Settings,
@@ -16,8 +16,8 @@ from pg_mcp.config.settings import (
 __all__ = [
     "CacheConfig",
     "DatabaseConfig",
+    "GeminiConfig",
     "ObservabilityConfig",
-    "OpenAIConfig",
     "ResilienceConfig",
     "SecurityConfig",
     "Settings",
