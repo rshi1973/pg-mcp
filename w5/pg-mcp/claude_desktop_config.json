@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "postgres": {
+    "pg-mcp": {
       "command": "uv",
       "args": [
         "--directory",
-        "/absolute/path/to/pg-mcp",
+        "/Users/ronny/geektime-bootcamp-ai/w5/pg-mcp",
         "run",
         "python",
         "main.py"
@@ -12,18 +12,20 @@
       "env": {
         "DATABASE_HOST": "localhost",
         "DATABASE_PORT": "5432",
-        "DATABASE_NAME": "your_database_name",
-        "DATABASE_USER": "your_database_user",
-        "DATABASE_PASSWORD": "your_database_password",
+        "DATABASE_NAME": "blog_small",
+        "DATABASE_USER": "ronny",
+        "DATABASE_PASSWORD": "",
         "DATABASE_MIN_POOL_SIZE": "5",
         "DATABASE_MAX_POOL_SIZE": "20",
+        "DATABASE_POOL_TIMEOUT": "30",
         "DATABASE_COMMAND_TIMEOUT": "30",
-        "OPENAI_API_KEY": "sk-your-openai-api-key-here",
-        "OPENAI_MODEL": "gpt-5.2-mini",
-        "OPENAI_MAX_TOKENS": "32000",
-        "OPENAI_TEMPERATURE": "0.0",
-        "OPENAI_TIMEOUT": "30",
+        "GEMINI_API_KEY": "AIzaSyAtMnifGw6GEXcf9VE7ulLMFiiUeFsi13o",
+        "GEMINI_MODEL": "gemini-2.0-flash-exp",
+        "GEMINI_MAX_TOKENS": "2000",
+        "GEMINI_TEMPERATURE": "0.0",
+        "GEMINI_TIMEOUT": "30",
         "SECURITY_ALLOW_WRITE_OPERATIONS": "false",
+        "SECURITY_BLOCKED_FUNCTIONS": "pg_sleep,pg_read_file,pg_write_file,lo_import,lo_export,pg_ls_dir,pg_read_binary_file,pg_stat_file,copy_from_program,copy_to_program",
         "SECURITY_MAX_ROWS": "10000",
         "SECURITY_MAX_EXECUTION_TIME": "30",
         "VALIDATION_MAX_QUESTION_LENGTH": "10000",
@@ -40,7 +42,7 @@
         "OBSERVABILITY_METRICS_PORT": "9090",
         "OBSERVABILITY_LOG_LEVEL": "INFO",
         "OBSERVABILITY_LOG_FORMAT": "json",
-        "ENVIRONMENT": "production"
+        "ENVIRONMENT": "development"
       }
     }
   }

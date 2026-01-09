@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "test-add": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/ronny/geektime-bootcamp-ai/w5/pg-mcp",
+        "run",
+        "python",
+        "main.py"
+      ]
+    }
+  }
+}

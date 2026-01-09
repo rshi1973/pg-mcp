@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/ronny/geektime-bootcamp-ai/w5/pg-mcp",
+        "run",
+        "python",
+        "-m",
+        "pg_mcp.server"
+      ],
+      "env": {
+        "DATABASE_HOST": "localhost",
+        "DATABASE_PORT": "5432",
+        "DATABASE_NAME": "blog_small",
+        "DATABASE_USER": "ronny",
+        "DATABASE_PASSWORD": "",
+        "GEMINI_API_KEY": "AIzaSyAtMnifGw6GEXcf9VE7ulLMFiiUeFsi13o",
+        "GEMINI_MODEL": "gemini-2.0-flash-exp",
+        "SECURITY_ALLOW_WRITE_OPERATIONS": "false",
+        "SECURITY_MAX_ROWS": "10000",
+        "CACHE_ENABLED": "true",
+        "OBSERVABILITY_LOG_LEVEL": "INFO",
+        "OBSERVABILITY_METRICS_ENABLED": "true",
+        "OBSERVABILITY_METRICS_PORT": "9090"
+      }
+    }
+  }
+}
