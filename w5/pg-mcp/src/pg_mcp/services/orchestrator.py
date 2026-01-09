@@ -42,9 +42,27 @@ from pg_mcp.services.sql_validator import SQLValidator
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class OrchestratorDependencies:
-    """Container for QueryOrchestrator dependencies to reduce parameter count."""
+    """Container for QueryOrchestrator dependencies to reduce parameter count.
+
+    This dataclass groups all service dependencies required by QueryOrchestrator,
+    reducing the constructor parameter count from 9 to 2.
+
+    Example:
+        >>> dependencies = OrchestratorDependencies(
+        ...     sql_generator=generator,
+        ...     sql_validator=validator,
+        ...     executor_registry=registry,
+        ...     result_validator=result_validator,
+        ...     schema_cache=cache,
+        ...     pools=pools,
+        ... )
+        >>> orchestrator = QueryOrchestrator(
+        ...     dependencies=dependencies,
+        ...     config=config,
+        ... )
+    """
 
     sql_generator: "SQLGenerator"
     sql_validator: "SQLValidator"
@@ -54,9 +72,22 @@ class OrchestratorDependencies:
     pools: dict[str, Pool]
 
 
-@dataclass
+@dataclass(frozen=True)
 class OrchestratorConfig:
-    """Container for QueryOrchestrator configuration to reduce parameter count."""
+    """Container for QueryOrchestrator configuration to reduce parameter count.
+
+    This dataclass groups all configuration objects required by QueryOrchestrator.
+
+    Example:
+        >>> config = OrchestratorConfig(
+        ...     resilience=resilience_config,
+        ...     validation=validation_config,
+        ... )
+        >>> orchestrator = QueryOrchestrator(
+        ...     dependencies=dependencies,
+        ...     config=config,
+        ... )
+    """
 
     resilience: ResilienceConfig
     validation: ValidationConfig
