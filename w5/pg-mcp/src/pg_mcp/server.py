@@ -21,7 +21,11 @@ from pg_mcp.observability.metrics import MetricsCollector
 from pg_mcp.resilience.circuit_breaker import CircuitBreaker
 from pg_mcp.resilience.rate_limiter import MultiRateLimiter
 from pg_mcp.services.executor_registry import ExecutorRegistry
-from pg_mcp.services.orchestrator import QueryOrchestrator
+from pg_mcp.services.orchestrator import (
+    OrchestratorConfig,
+    OrchestratorDependencies,
+    QueryOrchestrator,
+)
 from pg_mcp.services.result_validator import ResultValidator
 from pg_mcp.services.sql_executor import SQLExecutor
 from pg_mcp.services.sql_generator import SQLGenerator
@@ -194,15 +198,21 @@ async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-a
 
         # 8. Create QueryOrchestrator
         logger.info("Creating query orchestrator...")
-        _orchestrator = QueryOrchestrator(
+        dependencies = OrchestratorDependencies(
             sql_generator=sql_generator,
             sql_validator=sql_validator,
             executor_registry=executor_registry,
             result_validator=result_validator,
             schema_cache=_schema_cache,
             pools=_pools,
-            resilience_config=_settings.resilience,
-            validation_config=_settings.validation,
+        )
+        config = OrchestratorConfig(
+            resilience=_settings.resilience,
+            validation=_settings.validation,
+        )
+        _orchestrator = QueryOrchestrator(
+            dependencies=dependencies,
+            config=config,
         )
 
         logger.info("PostgreSQL MCP Server initialization complete!")

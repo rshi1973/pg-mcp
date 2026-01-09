@@ -13,7 +13,7 @@ from pg_mcp.config.settings import (
     CacheConfig,
     DatabaseConfig,
     ObservabilityConfig,
-    OpenAIConfig,
+    GeminiConfig,
     ResilienceConfig,
     SecurityConfig,
     Settings,
@@ -94,12 +94,12 @@ class TestDatabaseConfig:
             DatabaseConfig(max_pool_size=101)
 
 
-class TestOpenAIConfig:
-    """Tests for OpenAIConfig."""
+class TestGeminiConfig:
+    """Tests for GeminiConfig."""
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = OpenAIConfig(api_key="sk-test123")
+        config = GeminiConfig(api_key="sk-test123")
         assert config.model == "gpt-4o-mini"
         assert config.max_tokens == 2000
         assert config.temperature == 0.0
@@ -107,7 +107,7 @@ class TestOpenAIConfig:
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
-        config = OpenAIConfig(
+        config = GeminiConfig(
             api_key="sk-custom",
             model="gpt-4",
             max_tokens=4000,
@@ -122,33 +122,33 @@ class TestOpenAIConfig:
     def test_empty_api_key_rejected(self) -> None:
         """Test empty API key is rejected."""
         with pytest.raises(ValidationError, match="must not be empty"):
-            OpenAIConfig(api_key="")
+            GeminiConfig(api_key="")
 
     def test_whitespace_api_key_rejected(self) -> None:
         """Test whitespace-only API key is rejected."""
         with pytest.raises(ValidationError, match="must not be empty"):
-            OpenAIConfig(api_key="   ")
+            GeminiConfig(api_key="   ")
 
     def test_invalid_api_key_format(self) -> None:
         """Test API key must start with sk-."""
         with pytest.raises(ValidationError, match="must start with 'sk-'"):
-            OpenAIConfig(api_key="invalid-key")
+            GeminiConfig(api_key="invalid-key")
 
     def test_invalid_max_tokens(self) -> None:
         """Test invalid max_tokens is rejected."""
         with pytest.raises(ValidationError):
-            OpenAIConfig(api_key="sk-test", max_tokens=50)
+            GeminiConfig(api_key="sk-test", max_tokens=50)
 
         with pytest.raises(ValidationError):
-            OpenAIConfig(api_key="sk-test", max_tokens=5000)
+            GeminiConfig(api_key="sk-test", max_tokens=5000)
 
     def test_invalid_temperature(self) -> None:
         """Test invalid temperature is rejected."""
         with pytest.raises(ValidationError):
-            OpenAIConfig(api_key="sk-test", temperature=-0.1)
+            GeminiConfig(api_key="sk-test", temperature=-0.1)
 
         with pytest.raises(ValidationError):
-            OpenAIConfig(api_key="sk-test", temperature=2.1)
+            GeminiConfig(api_key="sk-test", temperature=2.1)
 
 
 class TestSecurityConfig:
@@ -323,7 +323,7 @@ class TestSettings:
 
     def test_default_settings(self) -> None:
         """Test default settings initialization."""
-        settings = Settings(openai=OpenAIConfig(api_key="sk-test"))
+        settings = Settings(gemini=GeminiConfig(api_key="sk-test"))
         assert settings.environment == "development"
         assert settings.database is not None
         assert settings.openai is not None
@@ -337,7 +337,7 @@ class TestSettings:
         """Test production environment check."""
         settings = Settings(
             environment="production",
-            openai=OpenAIConfig(api_key="sk-test"),
+            gemini=GeminiConfig(api_key="sk-test"),
         )
         assert settings.is_production
         assert not settings.is_development
@@ -346,7 +346,7 @@ class TestSettings:
         """Test development environment check."""
         settings = Settings(
             environment="development",
-            openai=OpenAIConfig(api_key="sk-test"),
+            gemini=GeminiConfig(api_key="sk-test"),
         )
         assert settings.is_development
         assert not settings.is_production
@@ -354,7 +354,7 @@ class TestSettings:
     def test_nested_config_override(self) -> None:
         """Test overriding nested configurations."""
         settings = Settings(
-            openai=OpenAIConfig(api_key="sk-test"),
+            gemini=GeminiConfig(api_key="sk-test"),
             database=DatabaseConfig(
                 host="custom.host",
                 port=5433,

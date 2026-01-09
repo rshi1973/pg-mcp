@@ -22,7 +22,11 @@ from pg_mcp.models.query import (
 )
 from pg_mcp.models.schema import ColumnInfo, DatabaseSchema, TableInfo
 from pg_mcp.resilience.circuit_breaker import CircuitState
-from pg_mcp.services.orchestrator import QueryOrchestrator
+from pg_mcp.services.orchestrator import (
+    OrchestratorConfig,
+    OrchestratorDependencies,
+    QueryOrchestrator,
+)
 
 
 class TestDatabaseResolution:
@@ -39,15 +43,21 @@ class TestDatabaseResolution:
     @pytest.fixture
     def orchestrator(self, mock_pools: dict[str, MagicMock]) -> QueryOrchestrator:
         """Create orchestrator with mocked components."""
-        return QueryOrchestrator(
+        dependencies = OrchestratorDependencies(
             sql_generator=MagicMock(),
             sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
+            executor_registry=MagicMock(),
             result_validator=MagicMock(),
             schema_cache=MagicMock(),
             pools=mock_pools,
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+        )
+        config = OrchestratorConfig(
+            resilience=ResilienceConfig(),
+            validation=ValidationConfig(),
+        )
+        return QueryOrchestrator(
+            dependencies=dependencies,
+            config=config,
         )
 
     def test_resolve_database_specified_valid(self, orchestrator: QueryOrchestrator) -> None:
@@ -67,14 +77,18 @@ class TestDatabaseResolution:
     def test_resolve_database_auto_select_single(self) -> None:
         """Test auto-selecting when only one database available."""
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={"only_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={"only_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         result = orchestrator._resolve_database(None)
@@ -93,14 +107,18 @@ class TestDatabaseResolution:
     def test_resolve_database_no_databases(self) -> None:
         """Test error when no databases configured."""
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         with pytest.raises(DatabaseError) as exc_info:
@@ -150,14 +168,18 @@ class TestSQLGenerationWithRetry:
         mock_validator.validate_or_raise.return_value = None  # No exception = valid
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(max_retries=3),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(max_retries=3),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -194,14 +216,18 @@ class TestSQLGenerationWithRetry:
         ]
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(max_retries=3),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(max_retries=3),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -235,14 +261,18 @@ class TestSQLGenerationWithRetry:
         )
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(max_retries=2),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(max_retries=2),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute and verify exception
@@ -262,14 +292,18 @@ class TestSQLGenerationWithRetry:
     async def test_generate_sql_circuit_breaker_open(self, mock_schema: DatabaseSchema) -> None:
         """Test that open circuit breaker prevents SQL generation."""
         orchestrator = QueryOrchestrator(
-            sql_generator=AsyncMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(circuit_breaker_threshold=1),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=AsyncMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(circuit_breaker_threshold=1),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Manually open the circuit breaker
@@ -294,14 +328,18 @@ class TestSQLGenerationWithRetry:
         mock_generator.generate.side_effect = RuntimeError("Unexpected error")
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(max_retries=1),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(max_retries=1),
+                validation=ValidationConfig(),
+            ),
         )
 
         with pytest.raises(LLMError) as exc_info:
@@ -330,14 +368,18 @@ class TestResultValidation:
         )
 
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=mock_validator,
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(enabled=True),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=mock_validator,
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(enabled=True),
+            ),
         )
 
         confidence = await orchestrator._validate_results_safely(
@@ -357,14 +399,18 @@ class TestResultValidation:
         mock_validator = AsyncMock()
 
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=mock_validator,
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(enabled=False),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=mock_validator,
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(enabled=False),
+            ),
         )
 
         confidence = await orchestrator._validate_results_safely(
@@ -385,14 +431,18 @@ class TestResultValidation:
         mock_validator.validate.side_effect = Exception("Validation failed")
 
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=mock_validator,
-            schema_cache=MagicMock(),
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(enabled=True),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=mock_validator,
+                schema_cache=MagicMock(),
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(enabled=True),
+            ),
         )
 
         # Should not raise, returns default confidence
@@ -451,14 +501,18 @@ class TestExecuteQueryFlow:
         mock_cache.get.return_value = mock_schema
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -488,7 +542,7 @@ class TestExecuteQueryFlow:
         mock_validator.validate_or_raise.return_value = None
 
         mock_executor = AsyncMock()
-        mock_executor.execute.return_value = (
+        mock_executor.execute_with_circuit_breaker.return_value = (
             [
                 {"id": 1, "name": "Alice"},
                 {"id": 2, "name": "Bob"},
@@ -508,14 +562,18 @@ class TestExecuteQueryFlow:
         mock_cache.get.return_value = mock_schema
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=mock_executor,
-            result_validator=mock_result_validator,
-            schema_cache=mock_cache,
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(enabled=True),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=mock_executor,
+                result_validator=mock_result_validator,
+                schema_cache=mock_cache,
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(enabled=True),
+            ),
         )
 
         # Execute
@@ -559,14 +617,18 @@ class TestExecuteQueryFlow:
         mock_pool = MagicMock()
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"test_db": mock_pool},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"test_db": mock_pool},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -590,14 +652,18 @@ class TestExecuteQueryFlow:
         mock_cache.load = AsyncMock(side_effect=Exception("DB connection failed"))
 
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -634,14 +700,18 @@ class TestExecuteQueryFlow:
         mock_validator.validate_or_raise.side_effect = SecurityViolationError("DELETE not allowed")
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(max_retries=1),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(max_retries=1),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -672,17 +742,21 @@ class TestExecuteQueryFlow:
         mock_validator.validate_or_raise.return_value = None
 
         mock_executor = AsyncMock()
-        mock_executor.execute.side_effect = DatabaseError("Query execution failed")
+        mock_executor.execute_with_circuit_breaker.side_effect = DatabaseError("Query execution failed")
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=mock_executor,
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=mock_executor,
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -707,14 +781,18 @@ class TestExecuteQueryFlow:
         mock_cache.get.side_effect = RuntimeError("Unexpected error")
 
         orchestrator = QueryOrchestrator(
-            sql_generator=MagicMock(),
-            sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"test_db": MagicMock()},
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=MagicMock(),
+                sql_validator=MagicMock(),
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"test_db": MagicMock()},
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute
@@ -745,14 +823,18 @@ class TestExecuteQueryFlow:
         mock_validator.validate_or_raise.return_value = None
 
         orchestrator = QueryOrchestrator(
-            sql_generator=mock_generator,
-            sql_validator=mock_validator,
-            sql_executor=MagicMock(),
-            result_validator=MagicMock(),
-            schema_cache=mock_cache,
-            pools={"only_db": MagicMock()},  # Only one database
-            resilience_config=ResilienceConfig(),
-            validation_config=ValidationConfig(),
+            dependencies=OrchestratorDependencies(
+                sql_generator=mock_generator,
+                sql_validator=mock_validator,
+                executor_registry=MagicMock(),
+                result_validator=MagicMock(),
+                schema_cache=mock_cache,
+                pools={"only_db": MagicMock()},  # Only one database
+            ),
+            config=OrchestratorConfig(
+                resilience=ResilienceConfig(),
+                validation=ValidationConfig(),
+            ),
         )
 
         # Execute without specifying database

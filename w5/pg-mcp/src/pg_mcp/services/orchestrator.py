@@ -11,6 +11,8 @@ from typing import Any
 
 from asyncpg import Pool
 
+from dataclasses import dataclass
+
 from pg_mcp.cache.schema_cache import SchemaCache
 from pg_mcp.config.settings import ResilienceConfig, ValidationConfig
 from pg_mcp.models.errors import (
@@ -40,6 +42,26 @@ from pg_mcp.services.sql_validator import SQLValidator
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class OrchestratorDependencies:
+    """Container for QueryOrchestrator dependencies to reduce parameter count."""
+
+    sql_generator: "SQLGenerator"
+    sql_validator: "SQLValidator"
+    executor_registry: "ExecutorRegistry"
+    result_validator: "ResultValidator"
+    schema_cache: SchemaCache
+    pools: dict[str, Pool]
+
+
+@dataclass
+class OrchestratorConfig:
+    """Container for QueryOrchestrator configuration to reduce parameter count."""
+
+    resilience: ResilienceConfig
+    validation: ValidationConfig
+
+
 class QueryOrchestrator:
     """Orchestrates the complete query processing pipeline.
 
@@ -66,40 +88,28 @@ class QueryOrchestrator:
 
     def __init__(
         self,
-        sql_generator: SQLGenerator,
-        sql_validator: SQLValidator,
-        executor_registry: ExecutorRegistry,
-        result_validator: ResultValidator,
-        schema_cache: SchemaCache,
-        pools: dict[str, Pool],
-        resilience_config: ResilienceConfig,
-        validation_config: ValidationConfig,
+        dependencies: OrchestratorDependencies,
+        config: OrchestratorConfig,
     ) -> None:
         """Initialize query orchestrator.
 
         Args:
-            sql_generator: SQL generation service.
-            sql_validator: SQL validation service.
-            executor_registry: Executor registry for database-specific executors.
-            result_validator: Result validation service.
-            schema_cache: Schema cache instance.
-            pools: Dictionary mapping database names to connection pools.
-            resilience_config: Resilience configuration for retries and circuit breaker.
-            validation_config: Validation configuration including thresholds.
+            dependencies: Container with all service dependencies.
+            config: Container with all configuration settings.
         """
-        self.sql_generator = sql_generator
-        self.sql_validator = sql_validator
-        self.executor_registry = executor_registry
-        self.result_validator = result_validator
-        self.schema_cache = schema_cache
-        self.pools = pools
-        self.resilience_config = resilience_config
-        self.validation_config = validation_config
+        self.sql_generator = dependencies.sql_generator
+        self.sql_validator = dependencies.sql_validator
+        self.executor_registry = dependencies.executor_registry
+        self.result_validator = dependencies.result_validator
+        self.schema_cache = dependencies.schema_cache
+        self.pools = dependencies.pools
+        self.resilience_config = config.resilience
+        self.validation_config = config.validation
 
         # Create circuit breaker for LLM calls
         self.circuit_breaker = CircuitBreaker(
-            failure_threshold=resilience_config.circuit_breaker_threshold,
-            recovery_timeout=resilience_config.circuit_breaker_timeout,
+            failure_threshold=config.resilience.circuit_breaker_threshold,
+            recovery_timeout=config.resilience.circuit_breaker_timeout,
         )
 
     async def execute_query(self, request: QueryRequest) -> QueryResponse:

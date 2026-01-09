@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from pg_mcp.config.settings import OpenAIConfig
+from pg_mcp.config.settings import GeminiConfig
 from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
 from pg_mcp.models.schema import (
     ColumnInfo,
@@ -27,7 +27,7 @@ class TestSQLExtraction:
     @pytest.fixture
     def generator(self) -> SQLGenerator:
         """Create SQLGenerator instance with test config."""
-        config = OpenAIConfig(api_key=SecretStr("sk-test-key-12345"))
+        config = GeminiConfig(api_key=SecretStr("sk-test-key-12345"))
         return SQLGenerator(config)
 
     def test_extract_sql_from_code_block(self, generator: SQLGenerator) -> None:
@@ -176,9 +176,9 @@ class TestSQLGenerator:
     """Test SQL Generator with mocked OpenAI API."""
 
     @pytest.fixture
-    def config(self) -> OpenAIConfig:
+    def config(self) -> GeminiConfig:
         """Create test OpenAI config."""
-        return OpenAIConfig(
+        return GeminiConfig(
             api_key=SecretStr("sk-test-key-12345"),
             model="gpt-4o-mini",
             temperature=0.0,
@@ -187,7 +187,7 @@ class TestSQLGenerator:
         )
 
     @pytest.fixture
-    def generator(self, config: OpenAIConfig) -> SQLGenerator:
+    def generator(self, config: GeminiConfig) -> SQLGenerator:
         """Create SQLGenerator instance."""
         return SQLGenerator(config)
 
@@ -487,7 +487,7 @@ LIMIT 10;"""
     @pytest.mark.asyncio
     async def test_generate_respects_config_settings(self, mock_schema: DatabaseSchema) -> None:
         """Test that generator respects all config settings."""
-        custom_config = OpenAIConfig(
+        custom_config = GeminiConfig(
             api_key=SecretStr("sk-custom-key"),
             model="gpt-4",
             temperature=0.5,
