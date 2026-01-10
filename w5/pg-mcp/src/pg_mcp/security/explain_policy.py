@@ -102,6 +102,8 @@ class ExplainPolicy:
         """
         try:
             # Run EXPLAIN with JSON format for structured output
+            # Note: SQL is already validated by SQLValidator, so string interpolation is safe.
+            # EXPLAIN is read-only and only analyzes query plans, never executes queries.
             explain_sql = f"EXPLAIN (FORMAT JSON) {sql}"
             result = await conn.fetchval(explain_sql)
 
