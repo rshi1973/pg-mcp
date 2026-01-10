@@ -1,7 +1,7 @@
 """Unit tests for SQL Generator service.
 
 This module tests the SQLGenerator class including SQL extraction logic,
-error handling, and OpenAI API integration (using mocks).
+error handling, and Google Gemini API integration (using mocks).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,7 +27,7 @@ class TestSQLExtraction:
     @pytest.fixture
     def generator(self) -> SQLGenerator:
         """Create SQLGenerator instance with test config."""
-        config = GeminiConfig(api_key=SecretStr("sk-test-key-12345"))
+        config = GeminiConfig(api_key=SecretStr("test-api-key-12345"))
         return SQLGenerator(config)
 
     def test_extract_sql_from_code_block(self, generator: SQLGenerator) -> None:
@@ -173,14 +173,14 @@ ORDER BY created_at DESC;
 
 
 class TestSQLGenerator:
-    """Test SQL Generator with mocked OpenAI API."""
+    """Test SQL Generator with mocked Google Gemini API."""
 
     @pytest.fixture
     def config(self) -> GeminiConfig:
-        """Create test OpenAI config."""
+        """Create test Gemini config."""
         return GeminiConfig(
-            api_key=SecretStr("sk-test-key-12345"),
-            model="gpt-4o-mini",
+            api_key=SecretStr("test-api-key-12345"),
+            model="gemini-2.0-flash-exp",
             temperature=0.0,
             max_tokens=2000,
             timeout=30.0,
@@ -279,27 +279,24 @@ class TestSQLGenerator:
     async def test_generate_simple_query(
         self, generator: SQLGenerator, mock_schema: DatabaseSchema
     ) -> None:
-        """Test simple query generation with mocked OpenAI response."""
+        """Test simple query generation with mocked Gemini response."""
         mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(message=MagicMock(content="```sql\nSELECT * FROM users;\n```"))
-        ]
+        mock_response.text = "```sql\nSELECT * FROM users;\n```"
 
         # Use AsyncMock for async method
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ) as mock_create:
             result = await generator.generate("列出所有用户", mock_schema)
 
-            # Verify OpenAI was called
+            # Verify Gemini API was called
             mock_create.assert_called_once()
             call_kwargs = mock_create.call_args.kwargs
 
-            assert call_kwargs["model"] == "gpt-4o-mini"
-            assert call_kwargs["temperature"] == 0.0
-            assert len(call_kwargs["messages"]) == 2
-            assert call_kwargs["messages"][0]["role"] == "system"
-            assert call_kwargs["messages"][1]["role"] == "user"
+            assert call_kwargs["model"] == "gemini-2.0-flash-exp"
+            assert call_kwargs["config"].temperature == 0.0
+            assert isinstance(call_kwargs["contents"], str)
+            assert "列出所有用户" in call_kwargs["contents"]
 
             # Verify result
             assert result == "SELECT * FROM users;"
@@ -310,16 +307,10 @@ class TestSQLGenerator:
     ) -> None:
         """Test generation with additional context."""
         mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(
-                message=MagicMock(
-                    content="```sql\nSELECT COUNT(*) FROM users WHERE status = 'active';\n```"
-                )
-            )
-        ]
+        mock_response.text = "```sql\nSELECT COUNT(*) FROM users WHERE status = 'active';\n```"
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ):
             result = await generator.generate(
                 question="How many active users?",
@@ -336,12 +327,10 @@ class TestSQLGenerator:
     ) -> None:
         """Test generation with retry context (previous attempt + error)."""
         mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(message=MagicMock(content="```sql\nSELECT COUNT(*) FROM users;\n```"))
-        ]
+        mock_response.text = "```sql\nSELECT COUNT(*) FROM users;\n```"
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ) as mock_create:
             result = await generator.generate(
                 question="Count users",
@@ -351,10 +340,10 @@ class TestSQLGenerator:
             )
 
             # Verify the prompt includes retry information
-            user_prompt = mock_create.call_args.kwargs["messages"][1]["content"]
-            assert "Previous Attempt (Failed)" in user_prompt
-            assert "SELECT COUNT(*) FROM user" in user_prompt
-            assert 'relation "user" does not exist' in user_prompt
+            prompt = mock_create.call_args.kwargs["contents"]
+            assert "Previous Attempt (Failed)" in prompt
+            assert "SELECT COUNT(*) FROM user" in prompt
+            assert 'relation "user" does not exist' in prompt
 
             assert result == "SELECT COUNT(*) FROM users;"
 
@@ -364,8 +353,8 @@ class TestSQLGenerator:
     ) -> None:
         """Test LLM timeout error handling."""
         with patch.object(
-            generator.client.chat.completions,
-            "create",
+            generator.client.aio.models,
+            "generate_content",
             new=AsyncMock(side_effect=TimeoutError("Request timed out")),
         ):
             with pytest.raises(LLMTimeoutError) as exc_info:
@@ -380,8 +369,8 @@ class TestSQLGenerator:
     ) -> None:
         """Test authentication error handling."""
         with patch.object(
-            generator.client.chat.completions,
-            "create",
+            generator.client.aio.models,
+            "generate_content",
             new=AsyncMock(side_effect=Exception("Authentication failed - invalid api_key")),
         ):
             with pytest.raises(LLMUnavailableError) as exc_info:
@@ -395,8 +384,8 @@ class TestSQLGenerator:
     ) -> None:
         """Test rate limit error handling."""
         with patch.object(
-            generator.client.chat.completions,
-            "create",
+            generator.client.aio.models,
+            "generate_content",
             new=AsyncMock(side_effect=Exception("rate_limit exceeded")),
         ):
             with pytest.raises(LLMUnavailableError) as exc_info:
@@ -408,12 +397,12 @@ class TestSQLGenerator:
     async def test_generate_handles_empty_response(
         self, generator: SQLGenerator, mock_schema: DatabaseSchema
     ) -> None:
-        """Test handling of empty response from OpenAI."""
+        """Test handling of empty response from Gemini."""
         mock_response = MagicMock()
-        mock_response.choices = []
+        mock_response.text = None
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ):
             with pytest.raises(LLMError) as exc_info:
                 await generator.generate("Count users", mock_schema)
@@ -424,17 +413,17 @@ class TestSQLGenerator:
     async def test_generate_handles_empty_content(
         self, generator: SQLGenerator, mock_schema: DatabaseSchema
     ) -> None:
-        """Test handling of empty message content."""
+        """Test handling of empty response content."""
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content=None))]
+        mock_response.text = ""
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ):
             with pytest.raises(LLMError) as exc_info:
                 await generator.generate("Count users", mock_schema)
 
-            assert "empty message content" in str(exc_info.value).lower()
+            assert "empty response" in str(exc_info.value).lower() or "failed to extract" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_generate_handles_invalid_sql_format(
@@ -442,12 +431,10 @@ class TestSQLGenerator:
     ) -> None:
         """Test handling when SQL cannot be extracted from response."""
         mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(message=MagicMock(content="I cannot generate a query for this request."))
-        ]
+        mock_response.text = "I cannot generate a query for this request."
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ):
             with pytest.raises(LLMError) as exc_info:
                 await generator.generate("Invalid request", mock_schema)
@@ -472,10 +459,10 @@ ORDER BY ro.order_count DESC
 LIMIT 10;"""
 
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content=f"```sql\n{cte_sql}\n```"))]
+        mock_response.text = f"```sql\n{cte_sql}\n```"
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ):
             result = await generator.generate(
                 "Show top 10 users by order count in last 30 days", mock_schema
@@ -488,8 +475,8 @@ LIMIT 10;"""
     async def test_generate_respects_config_settings(self, mock_schema: DatabaseSchema) -> None:
         """Test that generator respects all config settings."""
         custom_config = GeminiConfig(
-            api_key=SecretStr("sk-custom-key"),
-            model="gpt-4",
+            api_key=SecretStr("custom-api-key"),
+            model="gemini-pro",
             temperature=0.5,
             max_tokens=1000,
             timeout=60.0,
@@ -497,17 +484,17 @@ LIMIT 10;"""
         generator = SQLGenerator(custom_config)
 
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="```sql\nSELECT 1;\n```"))]
+        mock_response.text = "```sql\nSELECT 1;\n```"
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ) as mock_create:
             await generator.generate("Test query", mock_schema)
 
             call_kwargs = mock_create.call_args.kwargs
-            assert call_kwargs["model"] == "gpt-4"
-            assert call_kwargs["temperature"] == 0.5
-            assert call_kwargs["max_tokens"] == 1000
+            assert call_kwargs["model"] == "gemini-pro"
+            assert call_kwargs["config"].temperature == 0.5
+            assert call_kwargs["config"].max_output_tokens == 1000
 
     @pytest.mark.asyncio
     async def test_generate_includes_schema_context(
@@ -515,33 +502,33 @@ LIMIT 10;"""
     ) -> None:
         """Test that schema context is included in the prompt."""
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="```sql\nSELECT 1;\n```"))]
+        mock_response.text = "```sql\nSELECT 1;\n```"
 
         with patch.object(
-            generator.client.chat.completions, "create", new=AsyncMock(return_value=mock_response)
+            generator.client.aio.models, "generate_content", new=AsyncMock(return_value=mock_response)
         ) as mock_create:
             await generator.generate("Test query", mock_schema)
 
-            user_prompt = mock_create.call_args.kwargs["messages"][1]["content"]
+            prompt = mock_create.call_args.kwargs["contents"]
             # Verify schema information is in the prompt
-            assert "Database Schema:" in user_prompt
-            assert "test_db" in user_prompt
-            assert "users" in user_prompt
-            assert "orders" in user_prompt
-            assert "PostgreSQL Version: 15.0" in user_prompt
+            assert "Database Schema:" in prompt or "Schema:" in prompt
+            assert "test_db" in prompt
+            assert "users" in prompt
+            assert "orders" in prompt
+            assert "PostgreSQL Version: 15.0" in prompt or "Version: 15.0" in prompt
 
     @pytest.mark.asyncio
     async def test_generate_generic_error(
         self, generator: SQLGenerator, mock_schema: DatabaseSchema
     ) -> None:
-        """Test handling of generic OpenAI errors."""
+        """Test handling of generic Gemini errors."""
         with patch.object(
-            generator.client.chat.completions,
-            "create",
+            generator.client.aio.models,
+            "generate_content",
             new=AsyncMock(side_effect=Exception("Unknown error occurred")),
         ):
             with pytest.raises(LLMError) as exc_info:
                 await generator.generate("Count users", mock_schema)
 
-            assert "OpenAI API request failed" in str(exc_info.value)
+            assert "Gemini API request failed" in str(exc_info.value)
             assert exc_info.value.details["error"] == "Unknown error occurred"

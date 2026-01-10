@@ -59,7 +59,9 @@ class GeminiConfig(BaseSettings):
     )
 
     api_key: SecretStr = Field(default=SecretStr(""), description="Google Gemini API key")
-    model: str = Field(default="gemini-2.0-flash-exp", description="Model to use for SQL generation")
+    model: str = Field(
+        default="gemini-2.0-flash-exp", description="Model to use for SQL generation"
+    )
     max_tokens: int = Field(default=2000, ge=100, le=8192, description="Maximum tokens in response")
     temperature: float = Field(
         default=0.0, ge=0.0, le=2.0, description="Temperature for response randomness"

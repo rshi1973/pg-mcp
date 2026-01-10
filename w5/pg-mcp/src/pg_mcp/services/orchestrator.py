@@ -234,7 +234,7 @@ class QueryOrchestrator:
             extra={"request_id": request_id, "database": database_name},
         )
 
-        schema = self.schema_cache.get(database_name)
+        schema = await self.schema_cache.get(database_name)
         if schema is None:
             # Schema not in cache, load it
             pool = self.pools.get(database_name)
@@ -534,6 +534,7 @@ class QueryOrchestrator:
         previous_sql: str | None = None
         error_feedback: str | None = None
         max_retries = self.resilience_config.max_retries
+        generated_sql: str | None = None
 
         for attempt in range(max_retries + 1):
             try:
@@ -557,8 +558,9 @@ class QueryOrchestrator:
 
             except (SecurityViolationError, SQLParseError) as validation_error:
                 if attempt < max_retries:
-                    # Capture the failed SQL for next retry
-                    previous_sql = generated_sql
+                    # Capture the failed SQL for next retry (only if generation succeeded)
+                    if generated_sql is not None:
+                        previous_sql = generated_sql
                     error_feedback = self._handle_validation_retry(
                         validation_error, attempt, request_id
                     )

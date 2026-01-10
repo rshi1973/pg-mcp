@@ -45,9 +45,15 @@ class SchemaCache:
         self._cache_timestamps: dict[str, datetime] = {}
         self._refresh_task: asyncio.Task[None] | None = None
         self._stop_refresh = False
+        # Lock to protect concurrent access to cache dictionaries
+        self._lock = asyncio.Lock()
 
-    def get(self, database_name: str) -> DatabaseSchema | None:
+    async def get(self, database_name: str) -> DatabaseSchema | None:
         """Get cached schema if available and not expired.
+
+        This method is now async to ensure thread-safe access to the cache.
+        In asyncio, even though we have GIL, multiple operations on dictionaries
+        need protection when called from different coroutines.
 
         Args:
             database_name: Name of the database.
@@ -57,25 +63,26 @@ class SchemaCache:
                 None otherwise.
 
         Example:
-            >>> schema = cache.get("mydb")
+            >>> schema = await cache.get("mydb")
             >>> if schema is None:
             ...     schema = await cache.load("mydb", pool)
         """
         if not self.config.enabled:
             return None
 
-        if database_name not in self._cache:
-            return None
+        async with self._lock:
+            if database_name not in self._cache:
+                return None
 
-        # Check if cache is expired
-        cache_age = self.get_cache_age(database_name)
-        if cache_age is None or cache_age > self.config.schema_ttl:
-            # Cache expired, remove it
-            self._cache.pop(database_name, None)
-            self._cache_timestamps.pop(database_name, None)
-            return None
+            # Check if cache is expired
+            cache_age = self.get_cache_age(database_name)
+            if cache_age is None or cache_age > self.config.schema_ttl:
+                # Cache expired, remove it
+                self._cache.pop(database_name, None)
+                self._cache_timestamps.pop(database_name, None)
+                return None
 
-        return self._cache[database_name]
+            return self._cache[database_name]
 
     async def load(
         self,
@@ -105,8 +112,9 @@ class SchemaCache:
         schema = await introspector.introspect()
 
         if self.config.enabled:
-            self._cache[database_name] = schema
-            self._cache_timestamps[database_name] = datetime.now(UTC)
+            async with self._lock:
+                self._cache[database_name] = schema
+                self._cache_timestamps[database_name] = datetime.now(UTC)
 
         return schema
 
@@ -210,14 +218,21 @@ class SchemaCache:
     def get_cache_age(self, database_name: str) -> float | None:
         """Get cache age in seconds.
 
+        This method should only be called while holding the lock to ensure
+        thread-safe access. It's marked as a private helper for internal use.
+
         Args:
             database_name: Name of the database.
 
         Returns:
             float | None: Age in seconds if cached, None otherwise.
 
+        Note:
+            This method assumes the caller already holds the lock. For external
+            use, call get() which handles locking internally.
+
         Example:
-            >>> age = cache.get_cache_age("mydb")
+            >>> age = cache.get_cache_age("mydb")  # Internal use only
             >>> if age and age > 3600:
             ...     print("Cache is stale")
         """
@@ -228,31 +243,33 @@ class SchemaCache:
         age = datetime.now(UTC) - timestamp
         return age.total_seconds()
 
-    def clear(self, database_name: str | None = None) -> None:
+    async def clear(self, database_name: str | None = None) -> None:
         """Clear cache for a specific database or all databases.
 
         Args:
             database_name: Name of the database to clear. If None, clears all.
 
         Example:
-            >>> cache.clear("mydb")  # Clear specific database
-            >>> cache.clear()  # Clear all
+            >>> await cache.clear("mydb")  # Clear specific database
+            >>> await cache.clear()  # Clear all
         """
-        if database_name is None:
-            self._cache.clear()
-            self._cache_timestamps.clear()
-        else:
-            self._cache.pop(database_name, None)
-            self._cache_timestamps.pop(database_name, None)
+        async with self._lock:
+            if database_name is None:
+                self._cache.clear()
+                self._cache_timestamps.clear()
+            else:
+                self._cache.pop(database_name, None)
+                self._cache_timestamps.pop(database_name, None)
 
-    def get_cached_databases(self) -> list[str]:
+    async def get_cached_databases(self) -> list[str]:
         """Get list of currently cached database names.
 
         Returns:
             list[str]: List of database names with valid cache entries.
 
         Example:
-            >>> databases = cache.get_cached_databases()
+            >>> databases = await cache.get_cached_databases()
             >>> print(f"Cached: {', '.join(databases)}")
         """
-        return list(self._cache.keys())
+        async with self._lock:
+            return list(self._cache.keys())

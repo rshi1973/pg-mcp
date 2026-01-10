@@ -230,10 +230,24 @@ class SQLExecutor:
             PostgreSQL does not support parameterized SET commands, so we must
             use string formatting after strict validation.
         """
+        # Validate timeout before conversion
+        if timeout <= 0 or timeout > 300:  # Max 5 minutes
+            raise DatabaseError(
+                message=f"Invalid timeout value: {timeout}. Must be between 0 and 300 seconds.",
+                details={"timeout": timeout},
+            )
+
         try:
             # Set statement timeout (PostgreSQL expects milliseconds)
             # PostgreSQL SET commands don't support parameterized queries
+            # Validate timeout is within reasonable bounds before formatting
             timeout_ms = int(timeout * 1000)
+            if timeout_ms < 0 or timeout_ms > 300000:  # Max 5 minutes in ms
+                raise DatabaseError(
+                    message=f"Timeout value out of bounds: {timeout_ms}ms",
+                    details={"timeout_ms": timeout_ms},
+                )
+            # Use explicit integer formatting to prevent injection
             await conn.execute(f"SET statement_timeout = {timeout_ms}")
 
             # Set safe search_path to prevent schema injection
@@ -252,12 +266,15 @@ class SQLExecutor:
                 quoted_role = self._quote_identifier(readonly_role)
                 await conn.execute(f"SET ROLE {quoted_role}")
 
+        except DatabaseError:
+            # Re-raise DatabaseError as-is
+            raise
         except asyncpg.PostgresError as e:
             raise DatabaseError(
                 message=f"Failed to set session parameters: {e!s}",
                 details={
                     "error_code": e.sqlstate if hasattr(e, "sqlstate") else None,
-                    "timeout_ms": timeout_ms,
+                    "timeout_seconds": timeout,
                     "search_path": self.security_config.safe_search_path,
                     "readonly_role": self.security_config.readonly_role,
                 },

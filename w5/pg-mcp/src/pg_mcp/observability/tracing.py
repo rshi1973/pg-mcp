@@ -355,7 +355,7 @@ def setup_opentelemetry_tracing(
     # Configure exporter
     if endpoint:
         # Export to OTLP collector (Jaeger, Tempo, etc.)
-        exporter = OTLPSpanExporter(endpoint=endpoint)
+        exporter: OTLPSpanExporter | ConsoleSpanExporter = OTLPSpanExporter(endpoint=endpoint)
     else:
         # Export to console for development
         exporter = ConsoleSpanExporter()

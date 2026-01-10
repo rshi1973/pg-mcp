@@ -498,7 +498,7 @@ class TestExecuteQueryFlow:
         mock_validator.validate_or_raise.return_value = None
 
         mock_cache = MagicMock()
-        mock_cache.get.return_value = mock_schema
+        mock_cache.get = AsyncMock(return_value=mock_schema)
 
         orchestrator = QueryOrchestrator(
             dependencies=OrchestratorDependencies(
@@ -559,7 +559,7 @@ class TestExecuteQueryFlow:
         )
 
         mock_cache = MagicMock()
-        mock_cache.get.return_value = mock_schema
+        mock_cache.get = AsyncMock(return_value=mock_schema)
 
         orchestrator = QueryOrchestrator(
             dependencies=OrchestratorDependencies(
@@ -605,7 +605,7 @@ class TestExecuteQueryFlow:
 
         # Setup mocks
         mock_cache = MagicMock()
-        mock_cache.get.return_value = None  # Not in cache
+        mock_cache.get = AsyncMock(return_value=None)  # Not in cache
         mock_cache.load = AsyncMock(return_value=mock_schema)
 
         mock_generator = AsyncMock()
@@ -648,7 +648,7 @@ class TestExecuteQueryFlow:
         """Test handling of schema load failure."""
         # Setup mocks
         mock_cache = MagicMock()
-        mock_cache.get.return_value = None
+        mock_cache.get = AsyncMock(return_value=None)
         mock_cache.load = AsyncMock(side_effect=Exception("DB connection failed"))
 
         orchestrator = QueryOrchestrator(
@@ -691,7 +691,7 @@ class TestExecuteQueryFlow:
 
         # Setup mocks
         mock_cache = MagicMock()
-        mock_cache.get.return_value = mock_schema
+        mock_cache.get = AsyncMock(return_value=mock_schema)
 
         mock_generator = AsyncMock()
         mock_generator.generate.return_value = "DELETE FROM users;"
@@ -733,7 +733,7 @@ class TestExecuteQueryFlow:
         """Test handling of SQL execution errors."""
         # Setup mocks
         mock_cache = MagicMock()
-        mock_cache.get.return_value = mock_schema
+        mock_cache.get = AsyncMock(return_value=mock_schema)
 
         mock_generator = AsyncMock()
         mock_generator.generate.return_value = "SELECT * FROM users;"
@@ -778,7 +778,7 @@ class TestExecuteQueryFlow:
         """Test handling of unexpected errors."""
         # Setup mocks
         mock_cache = MagicMock()
-        mock_cache.get.side_effect = RuntimeError("Unexpected error")
+        mock_cache.get = AsyncMock(side_effect=RuntimeError("Unexpected error"))
 
         orchestrator = QueryOrchestrator(
             dependencies=OrchestratorDependencies(
@@ -814,7 +814,7 @@ class TestExecuteQueryFlow:
         """Test auto-selecting database when only one available."""
         # Setup mocks
         mock_cache = MagicMock()
-        mock_cache.get.return_value = mock_schema
+        mock_cache.get = AsyncMock(return_value=mock_schema)
 
         mock_generator = AsyncMock()
         mock_generator.generate.return_value = "SELECT 1;"

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "postgres": {
+    "pg-mcp": {
       "command": "uv",
       "args": [
         "--directory",
@@ -8,7 +8,7 @@
         "run",
         "python",
         "-m",
-        "pg_mcp.server"
+        "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -16,7 +16,7 @@
         "DATABASE_NAME": "blog_small",
         "DATABASE_USER": "ronny",
         "DATABASE_PASSWORD": "",
-        "GEMINI_API_KEY": "AIzaSyAtMnifGw6GEXcf9VE7ulLMFiiUeFsi13o",
+        "GEMINI_API_KEY": "your-gemini-api-key-here",
         "GEMINI_MODEL": "gemini-2.0-flash-exp",
         "SECURITY_ALLOW_WRITE_OPERATIONS": "false",
         "SECURITY_MAX_ROWS": "10000",

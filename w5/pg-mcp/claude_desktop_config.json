@@ -7,7 +7,8 @@
         "/Users/ronny/geektime-bootcamp-ai/w5/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m",
+        "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -19,7 +20,7 @@
         "DATABASE_MAX_POOL_SIZE": "20",
         "DATABASE_POOL_TIMEOUT": "30",
         "DATABASE_COMMAND_TIMEOUT": "30",
-        "GEMINI_API_KEY": "AIzaSyAtMnifGw6GEXcf9VE7ulLMFiiUeFsi13o",
+        "GEMINI_API_KEY": "your-gemini-api-key-here",
         "GEMINI_MODEL": "gemini-2.0-flash-exp",
         "GEMINI_MAX_TOKENS": "2000",
         "GEMINI_TEMPERATURE": "0.0",

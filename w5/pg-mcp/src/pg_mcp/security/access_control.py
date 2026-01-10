@@ -158,7 +158,7 @@ class AccessControlPolicy:
         )
 
 
-class TableColumnExtractor(Visitor):
+class TableColumnExtractor(Visitor):  # type: ignore[misc]
     """Extract table and column references from SQL AST.
 
     This visitor traverses the SQL parse tree and collects all table
@@ -201,15 +201,27 @@ class TableColumnExtractor(Visitor):
             column_node = fields[1]
 
             if hasattr(table_node, "val") and hasattr(column_node, "val"):
-                table = table_node.val.value if hasattr(table_node.val, "value") else str(table_node.val)
-                column = column_node.val.value if hasattr(column_node.val, "value") else str(column_node.val)
+                table = (
+                    table_node.val.value
+                    if hasattr(table_node.val, "value")
+                    else str(table_node.val)
+                )
+                column = (
+                    column_node.val.value
+                    if hasattr(column_node.val, "value")
+                    else str(column_node.val)
+                )
                 self.columns.setdefault(table, set()).add(column)
 
         elif len(fields) == 1:
             # Unqualified: column (use current table)
             column_node = fields[0]
             if hasattr(column_node, "val"):
-                column = column_node.val.value if hasattr(column_node.val, "value") else str(column_node.val)
+                column = (
+                    column_node.val.value
+                    if hasattr(column_node.val, "value")
+                    else str(column_node.val)
+                )
                 if self.current_table and column != "*":
                     self.columns.setdefault(self.current_table, set()).add(column)
 

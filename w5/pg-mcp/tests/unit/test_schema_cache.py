@@ -63,12 +63,14 @@ class TestSchemaCache:
             version="PostgreSQL 16.0",
         )
 
-    def test_get_returns_none_when_empty(self, cache: SchemaCache):
+    @pytest.mark.asyncio
+    async def test_get_returns_none_when_empty(self, cache: SchemaCache):
         """Test that get returns None when cache is empty."""
-        result = cache.get("nonexistent_db")
+        result = await cache.get("nonexistent_db")
         assert result is None
 
-    def test_get_returns_none_when_disabled(
+    @pytest.mark.asyncio
+    async def test_get_returns_none_when_disabled(
         self, disabled_cache_config: CacheConfig, sample_schema: DatabaseSchema
     ):
         """Test that get returns None when caching is disabled."""
@@ -76,7 +78,7 @@ class TestSchemaCache:
         cache._cache["test_db"] = sample_schema
         cache._cache_timestamps["test_db"] = datetime.now(UTC)
 
-        result = cache.get("test_db")
+        result = await cache.get("test_db")
         assert result is None
 
     @pytest.mark.asyncio
@@ -95,7 +97,8 @@ class TestSchemaCache:
             result = await cache.load("test_db", mock_pool)
 
             assert result == sample_schema
-            assert cache.get("test_db") == sample_schema
+            cached_result = await cache.get("test_db")
+            assert cached_result == sample_schema
 
     @pytest.mark.asyncio
     async def test_load_does_not_cache_when_disabled(
@@ -115,7 +118,8 @@ class TestSchemaCache:
             result = await cache.load("test_db", mock_pool)
 
             assert result == sample_schema
-            assert cache.get("test_db") is None
+            cached_result = await cache.get("test_db")
+            assert cached_result is None
 
     def test_get_cache_age_returns_none_when_not_cached(self, cache: SchemaCache):
         """Test that get_cache_age returns None for non-cached database."""
@@ -136,27 +140,32 @@ class TestSchemaCache:
         assert age is not None
         assert 95 <= age <= 105  # Allow small time variance
 
-    def test_get_returns_none_when_expired(self, cache: SchemaCache, sample_schema: DatabaseSchema):
+    @pytest.mark.asyncio
+    async def test_get_returns_none_when_expired(self, cache: SchemaCache, sample_schema: DatabaseSchema):
         """Test that get returns None when cache is expired."""
         # Set cache with expired timestamp (2 hours ago, TTL is 1 hour)
         expired_time = datetime.now(UTC) - timedelta(hours=2)
-        cache._cache["test_db"] = sample_schema
-        cache._cache_timestamps["test_db"] = expired_time
+        async with cache._lock:
+            cache._cache["test_db"] = sample_schema
+            cache._cache_timestamps["test_db"] = expired_time
 
-        result = cache.get("test_db")
+        result = await cache.get("test_db")
 
         assert result is None
         # Verify cache was cleaned up
-        assert "test_db" not in cache._cache
-        assert "test_db" not in cache._cache_timestamps
+        async with cache._lock:
+            assert "test_db" not in cache._cache
+            assert "test_db" not in cache._cache_timestamps
 
-    def test_get_returns_schema_when_valid(self, cache: SchemaCache, sample_schema: DatabaseSchema):
+    @pytest.mark.asyncio
+    async def test_get_returns_schema_when_valid(self, cache: SchemaCache, sample_schema: DatabaseSchema):
         """Test that get returns schema when cache is valid."""
         # Set cache with recent timestamp
-        cache._cache["test_db"] = sample_schema
-        cache._cache_timestamps["test_db"] = datetime.now(UTC)
+        async with cache._lock:
+            cache._cache["test_db"] = sample_schema
+            cache._cache_timestamps["test_db"] = datetime.now(UTC)
 
-        result = cache.get("test_db")
+        result = await cache.get("test_db")
 
         assert result == sample_schema
 
@@ -185,50 +194,59 @@ class TestSchemaCache:
             assert new_age is not None
             assert new_age < 60  # Should be very recent
 
-    def test_clear_removes_specific_database(
+    @pytest.mark.asyncio
+    async def test_clear_removes_specific_database(
         self, cache: SchemaCache, sample_schema: DatabaseSchema
     ):
         """Test that clear removes specific database from cache."""
-        cache._cache["test_db"] = sample_schema
-        cache._cache_timestamps["test_db"] = datetime.now(UTC)
-        cache._cache["other_db"] = sample_schema
-        cache._cache_timestamps["other_db"] = datetime.now(UTC)
+        async with cache._lock:
+            cache._cache["test_db"] = sample_schema
+            cache._cache_timestamps["test_db"] = datetime.now(UTC)
+            cache._cache["other_db"] = sample_schema
+            cache._cache_timestamps["other_db"] = datetime.now(UTC)
 
-        cache.clear("test_db")
+        await cache.clear("test_db")
 
-        assert "test_db" not in cache._cache
-        assert "test_db" not in cache._cache_timestamps
-        assert "other_db" in cache._cache
-        assert "other_db" in cache._cache_timestamps
+        async with cache._lock:
+            assert "test_db" not in cache._cache
+            assert "test_db" not in cache._cache_timestamps
+            assert "other_db" in cache._cache
+            assert "other_db" in cache._cache_timestamps
 
-    def test_clear_removes_all_databases(self, cache: SchemaCache, sample_schema: DatabaseSchema):
+    @pytest.mark.asyncio
+    async def test_clear_removes_all_databases(self, cache: SchemaCache, sample_schema: DatabaseSchema):
         """Test that clear with no argument removes all databases."""
-        cache._cache["test_db"] = sample_schema
-        cache._cache_timestamps["test_db"] = datetime.now(UTC)
-        cache._cache["other_db"] = sample_schema
-        cache._cache_timestamps["other_db"] = datetime.now(UTC)
+        async with cache._lock:
+            cache._cache["test_db"] = sample_schema
+            cache._cache_timestamps["test_db"] = datetime.now(UTC)
+            cache._cache["other_db"] = sample_schema
+            cache._cache_timestamps["other_db"] = datetime.now(UTC)
 
-        cache.clear()
+        await cache.clear()
 
-        assert len(cache._cache) == 0
-        assert len(cache._cache_timestamps) == 0
+        async with cache._lock:
+            assert len(cache._cache) == 0
+            assert len(cache._cache_timestamps) == 0
 
-    def test_get_cached_databases_returns_all_databases(
+    @pytest.mark.asyncio
+    async def test_get_cached_databases_returns_all_databases(
         self, cache: SchemaCache, sample_schema: DatabaseSchema
     ):
         """Test that get_cached_databases returns all cached database names."""
-        cache._cache["db1"] = sample_schema
-        cache._cache_timestamps["db1"] = datetime.now(UTC)
-        cache._cache["db2"] = sample_schema
-        cache._cache_timestamps["db2"] = datetime.now(UTC)
+        async with cache._lock:
+            cache._cache["db1"] = sample_schema
+            cache._cache_timestamps["db1"] = datetime.now(UTC)
+            cache._cache["db2"] = sample_schema
+            cache._cache_timestamps["db2"] = datetime.now(UTC)
 
-        databases = cache.get_cached_databases()
+        databases = await cache.get_cached_databases()
 
         assert set(databases) == {"db1", "db2"}
 
-    def test_get_cached_databases_returns_empty_list(self, cache: SchemaCache):
+    @pytest.mark.asyncio
+    async def test_get_cached_databases_returns_empty_list(self, cache: SchemaCache):
         """Test that get_cached_databases returns empty list when cache is empty."""
-        databases = cache.get_cached_databases()
+        databases = await cache.get_cached_databases()
         assert databases == []
 
     @pytest.mark.asyncio
