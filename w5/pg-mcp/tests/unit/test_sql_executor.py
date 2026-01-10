@@ -109,10 +109,14 @@ def executor(
     db_config: DatabaseConfig,
 ) -> SQLExecutor:
     """Create a SQLExecutor instance with mocked dependencies."""
+    from pg_mcp.config.settings import ResilienceConfig
+
+    resilience_config = ResilienceConfig()
     return SQLExecutor(
         pool=mock_pool,
         security_config=security_config,
         db_config=db_config,
+        resilience_config=resilience_config,
     )
 
 
@@ -245,10 +249,15 @@ class TestSQLExecutor:
         execute_commands = [str(call[0][0]) for call in execute_calls]
 
         # Check timeout was set (15 seconds = 15000 ms)
-        assert any("SET statement_timeout = 15000" in cmd for cmd in execute_commands)
+        # statement_timeout uses parameterized query, so check for the command
+        assert any("SET statement_timeout" in cmd for cmd in execute_commands)
+        # Verify the parameter value was 15000
+        timeout_call = [call for call in execute_calls if "statement_timeout" in str(call[0][0])]
+        assert len(timeout_call) > 0
+        assert timeout_call[0][0][1] == 15000  # Second argument is the parameter value
 
-        # Check search_path was set
-        assert any("SET search_path = 'public'" in cmd for cmd in execute_commands)
+        # Check search_path was set with quoted identifier
+        assert any("SET search_path" in cmd and '"public"' in cmd for cmd in execute_commands)
 
     @pytest.mark.asyncio
     async def test_session_params_with_readonly_role(
@@ -266,10 +275,13 @@ class TestSQLExecutor:
         acquire_mock.__aexit__ = AsyncMock(return_value=None)
         pool.acquire = MagicMock(return_value=acquire_mock)
 
+        from pg_mcp.config.settings import ResilienceConfig
+
         executor = SQLExecutor(
             pool=pool,
             security_config=security_config_with_role,
             db_config=db_config,
+            resilience_config=ResilienceConfig(),
         )
         sql = "SELECT 1"
         mock_connection.fetch.return_value = [create_mock_record({"column": 1})]
@@ -280,7 +292,7 @@ class TestSQLExecutor:
         # Assert - verify SET ROLE was called
         execute_calls = mock_connection.execute.call_args_list
         execute_commands = [str(call[0][0]) for call in execute_calls]
-        assert any("SET ROLE readonly_user" in cmd for cmd in execute_commands)
+        assert any("SET ROLE" in cmd and "readonly_user" in cmd for cmd in execute_commands)
 
     @pytest.mark.asyncio
     async def test_session_params_invalid_search_path(
@@ -303,10 +315,13 @@ class TestSQLExecutor:
         acquire_mock.__aexit__ = AsyncMock(return_value=None)
         pool.acquire = MagicMock(return_value=acquire_mock)
 
+        from pg_mcp.config.settings import ResilienceConfig
+
         executor = SQLExecutor(
             pool=pool,
             security_config=malicious_config,
             db_config=db_config,
+            resilience_config=ResilienceConfig(),
         )
         sql = "SELECT 1"
 
@@ -337,10 +352,13 @@ class TestSQLExecutor:
         acquire_mock.__aexit__ = AsyncMock(return_value=None)
         pool.acquire = MagicMock(return_value=acquire_mock)
 
+        from pg_mcp.config.settings import ResilienceConfig
+
         executor = SQLExecutor(
             pool=pool,
             security_config=malicious_config,
             db_config=db_config,
+            resilience_config=ResilienceConfig(),
         )
         sql = "SELECT 1"
 
@@ -362,10 +380,13 @@ class TestResultSerialization:
         db_config: DatabaseConfig,
     ) -> SQLExecutor:
         """Create executor for serialization tests."""
+        from pg_mcp.config.settings import ResilienceConfig
+
         return SQLExecutor(
             pool=mock_pool,
             security_config=security_config,
             db_config=db_config,
+            resilience_config=ResilienceConfig(),
         )
 
     def test_serialize_datetime_types(

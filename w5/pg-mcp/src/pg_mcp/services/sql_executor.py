@@ -226,32 +226,31 @@ class SQLExecutor:
         Note:
             These settings apply only to the current transaction and are
             automatically reset when the connection is returned to the pool.
+
+            PostgreSQL does not support parameterized SET commands, so we must
+            use string formatting after strict validation.
         """
         try:
             # Set statement timeout (PostgreSQL expects milliseconds)
+            # This one CAN use parameterized query
             timeout_ms = int(timeout * 1000)
             await conn.execute("SET statement_timeout = $1", timeout_ms)
 
             # Set safe search_path to prevent schema injection
             search_path = self.security_config.safe_search_path
-            # Validate search_path contains only safe characters
-            if not all(c.isalnum() or c in ("_", ",", " ") for c in search_path):
-                raise DatabaseError(
-                    message="Invalid search_path configuration",
-                    details={"search_path": search_path},
-                )
-            await conn.execute("SET search_path = $1", search_path)
+            self._validate_identifier(search_path, "search_path", allow_comma=True)
+            # PostgreSQL SET commands don't support parameterized queries
+            # Use identifier quoting for safety after validation
+            quoted_path = self._quote_search_path(search_path)
+            await conn.execute(f"SET search_path = {quoted_path}")
 
             # Switch to read-only role if configured
             if self.security_config.readonly_role:
                 readonly_role = self.security_config.readonly_role
-                # Validate role name contains only safe characters
-                if not all(c.isalnum() or c == "_" for c in readonly_role):
-                    raise DatabaseError(
-                        message="Invalid readonly_role configuration",
-                        details={"readonly_role": readonly_role},
-                    )
-                await conn.execute("SET ROLE $1", readonly_role)
+                self._validate_identifier(readonly_role, "readonly_role")
+                # Use identifier quoting for safety after validation
+                quoted_role = self._quote_identifier(readonly_role)
+                await conn.execute(f"SET ROLE {quoted_role}")
 
         except asyncpg.PostgresError as e:
             raise DatabaseError(
@@ -263,6 +262,81 @@ class SQLExecutor:
                     "readonly_role": self.security_config.readonly_role,
                 },
             ) from e
+
+    def _validate_identifier(
+        self, value: str, name: str, allow_comma: bool = False
+    ) -> None:
+        """Validate PostgreSQL identifier contains only safe characters.
+
+        Args:
+            value: Identifier value to validate.
+            name: Name of the identifier (for error messages).
+            allow_comma: Whether to allow commas (for search_path with multiple schemas).
+
+        Raises:
+            DatabaseError: If identifier contains unsafe characters.
+
+        Note:
+            This validation is critical for security since PostgreSQL SET commands
+            do not support parameterized queries.
+        """
+        # Define allowed characters: alphanumeric, underscore, space
+        # Comma is allowed only for search_path
+        allowed_chars = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ "
+        )
+        if allow_comma:
+            allowed_chars.add(",")
+
+        if not value:
+            raise DatabaseError(
+                message=f"Invalid {name} configuration: cannot be empty",
+                details={name: value},
+            )
+
+        if not all(c in allowed_chars for c in value):
+            raise DatabaseError(
+                message=f"Invalid {name} configuration: contains unsafe characters",
+                details={name: value},
+            )
+
+    def _quote_identifier(self, identifier: str) -> str:
+        """Quote PostgreSQL identifier safely.
+
+        Args:
+            identifier: Identifier to quote (already validated).
+
+        Returns:
+            str: Quoted identifier safe for use in SQL.
+
+        Note:
+            PostgreSQL identifiers are case-insensitive unless quoted.
+            We quote all identifiers to preserve case and prevent injection.
+        """
+        # Escape any double quotes in the identifier by doubling them
+        escaped = identifier.replace('"', '""')
+        return f'"{escaped}"'
+
+    def _quote_search_path(self, search_path: str) -> str:
+        """Quote search_path value safely.
+
+        Args:
+            search_path: Search path value (already validated), may contain commas.
+
+        Returns:
+            str: Quoted search path safe for use in SQL.
+
+        Note:
+            search_path can contain multiple schemas separated by commas.
+            Each schema name must be quoted separately.
+        """
+        if "," in search_path:
+            # Multiple schemas: split, quote each, rejoin
+            schemas = [s.strip() for s in search_path.split(",")]
+            return ", ".join(self._quote_identifier(s) for s in schemas)
+        else:
+            # Single schema
+            return self._quote_identifier(search_path)
 
     def _serialize_results(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Serialize PostgreSQL-specific types to JSON-compatible types.

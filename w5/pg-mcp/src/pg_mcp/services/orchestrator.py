@@ -7,7 +7,7 @@ validation. It implements retry logic, error handling, and request tracking.
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from asyncpg import Pool
 
@@ -38,6 +38,9 @@ from pg_mcp.services.result_validator import ResultValidator
 from pg_mcp.services.sql_executor import SQLExecutor
 from pg_mcp.services.sql_generator import SQLGenerator
 from pg_mcp.services.sql_validator import SQLValidator
+
+if TYPE_CHECKING:
+    from pg_mcp.models.schema import DatabaseSchema
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +215,7 @@ class QueryOrchestrator:
         except Exception as e:
             return self._build_unexpected_error_response(e, request_id)
 
-    async def _load_schema(self, database_name: str, request_id: str) -> Any:
+    async def _load_schema(self, database_name: str, request_id: str) -> "DatabaseSchema":
         """Load schema from cache or database.
 
         Args:
@@ -220,7 +223,7 @@ class QueryOrchestrator:
             request_id: Request ID for tracking.
 
         Returns:
-            DatabaseSchema: Loaded schema.
+            DatabaseSchema: Loaded schema with table and column information.
 
         Raises:
             DatabaseError: If pool is not available.
@@ -494,7 +497,7 @@ class QueryOrchestrator:
     async def _generate_sql_with_retry(
         self,
         question: str,
-        schema: Any,
+        schema: "DatabaseSchema",
         request_id: str,
     ) -> tuple[str, ValidationResult, int | None]:
         """Generate and validate SQL with retry logic on validation failures.
@@ -526,7 +529,62 @@ class QueryOrchestrator:
             ...     request_id="123",
             ... )
         """
-        # Check circuit breaker
+        self._check_circuit_breaker()
+
+        previous_sql: str | None = None
+        error_feedback: str | None = None
+        max_retries = self.resilience_config.max_retries
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Generate SQL
+                generated_sql = await self._generate_sql(
+                    question=question,
+                    schema=schema,
+                    previous_sql=previous_sql,
+                    error_feedback=error_feedback,
+                    attempt=attempt,
+                    request_id=request_id,
+                )
+
+                # Validate SQL (raises on failure)
+                self.sql_validator.validate_or_raise(generated_sql)
+
+                # Validation successful
+                return self._build_successful_generation_result(
+                    generated_sql, attempt, request_id
+                )
+
+            except (SecurityViolationError, SQLParseError) as validation_error:
+                if attempt < max_retries:
+                    # Capture the failed SQL for next retry
+                    previous_sql = generated_sql
+                    error_feedback = self._handle_validation_retry(
+                        validation_error, attempt, request_id
+                    )
+                    continue
+                else:
+                    self._handle_validation_failure(validation_error, attempt, request_id)
+                    raise
+            except (LLMError, SecurityViolationError, SQLParseError):
+                raise
+            except Exception as e:
+                self._handle_unexpected_error(e, request_id)
+                raise
+
+        # Should not reach here, but just in case
+        self.circuit_breaker.record_failure()
+        raise LLMError(
+            message="SQL generation failed after all retry attempts",
+            details={"max_retries": max_retries},
+        )
+
+    def _check_circuit_breaker(self) -> None:
+        """Check if circuit breaker allows requests.
+
+        Raises:
+            LLMError: If circuit breaker is open.
+        """
         if not self.circuit_breaker.allow_request():
             raise LLMError(
                 message="SQL generation service is temporarily unavailable (circuit breaker open)",
@@ -536,113 +594,175 @@ class QueryOrchestrator:
                 },
             )
 
-        previous_sql: str | None = None
-        error_feedback: str | None = None
-        max_retries = self.resilience_config.max_retries
+    async def _attempt_sql_generation_internal(
+        self,
+        question: str,
+        schema: "DatabaseSchema",
+        previous_sql: str | None,
+        error_feedback: str | None,
+        attempt: int,
+        request_id: str,
+    ) -> tuple[str, tuple[str, ValidationResult, int | None]]:
+        """Deprecated: Use _generate_sql and _build_successful_generation_result instead."""
+        # This method is no longer used but kept for reference
+        raise NotImplementedError("Use _generate_sql instead")
+
+    async def _generate_sql(
+        self,
+        question: str,
+        schema: "DatabaseSchema",
+        previous_sql: str | None,
+        error_feedback: str | None,
+        attempt: int,
+        request_id: str,
+    ) -> str:
+        """Generate SQL from natural language question.
+
+        Args:
+            question: User's natural language question.
+            schema: Database schema for context.
+            previous_sql: Previously generated SQL that failed (for retry).
+            error_feedback: Error message from previous attempt.
+            attempt: Current attempt number (0-indexed).
+            request_id: Request ID for tracking.
+
+        Returns:
+            str: Generated SQL query.
+
+        Raises:
+            LLMError: If SQL generation fails.
+        """
+        logger.debug(
+            "Generating SQL",
+            extra={
+                "request_id": request_id,
+                "attempt": attempt + 1,
+                "max_retries": self.resilience_config.max_retries + 1,
+            },
+        )
+
+        # Generate SQL
+        generated_sql = await self.sql_generator.generate(
+            question=question,
+            schema=schema,
+            previous_attempt=previous_sql,
+            error_feedback=error_feedback,
+        )
+
+        logger.debug(
+            "SQL generated",
+            extra={
+                "request_id": request_id,
+                "sql_length": len(generated_sql),
+            },
+        )
+
+        return generated_sql
+
+    def _build_successful_generation_result(
+        self, generated_sql: str, attempt: int, request_id: str
+    ) -> tuple[str, ValidationResult, int | None]:
+        """Build result for successful SQL generation and validation.
+
+        Args:
+            generated_sql: The validated SQL query.
+            attempt: Current attempt number (0-indexed).
+            request_id: Request ID for tracking.
+
+        Returns:
+            tuple: (generated_sql, validation_result, tokens_used)
+        """
+        self.circuit_breaker.record_success()
+        logger.info(
+            "SQL generated and validated successfully",
+            extra={
+                "request_id": request_id,
+                "attempts": attempt + 1,
+            },
+        )
+
+        # Build validation result
+        validation_result = ValidationResult(
+            is_valid=True,
+            is_select=True,
+            allows_data_modification=False,
+            uses_blocked_functions=[],
+            error_message=None,
+        )
+
+        # Note: tokens_used would come from LLM response metadata if available
         tokens_used: int | None = None
 
-        for attempt in range(max_retries + 1):
-            try:
-                logger.debug(
-                    "Generating SQL",
-                    extra={
-                        "request_id": request_id,
-                        "attempt": attempt + 1,
-                        "max_retries": max_retries + 1,
-                    },
-                )
+        return generated_sql, validation_result, tokens_used
 
-                # Generate SQL
-                generated_sql = await self.sql_generator.generate(
-                    question=question,
-                    schema=schema,
-                    previous_attempt=previous_sql,
-                    error_feedback=error_feedback,
-                )
+    def _handle_validation_retry(
+        self,
+        validation_error: SecurityViolationError | SQLParseError,
+        attempt: int,
+        request_id: str,
+    ) -> str:
+        """Handle validation failure and prepare for retry.
 
-                # Note: tokens_used would come from OpenAI response metadata if available
-                # For now, we don't extract it, but it can be added later
+        Args:
+            validation_error: The validation error that occurred.
+            attempt: Current attempt number (0-indexed).
+            request_id: Request ID for tracking.
 
-                logger.debug(
-                    "SQL generated",
-                    extra={
-                        "request_id": request_id,
-                        "sql_length": len(generated_sql),
-                    },
-                )
-
-                # Validate SQL
-                try:
-                    self.sql_validator.validate_or_raise(generated_sql)
-                except (SecurityViolationError, SQLParseError) as validation_error:
-                    if attempt < max_retries:
-                        # Record as failure and retry with feedback
-                        logger.warning(
-                            "SQL validation failed, retrying with feedback",
-                            extra={
-                                "request_id": request_id,
-                                "attempt": attempt + 1,
-                                "error": str(validation_error),
-                            },
-                        )
-                        previous_sql = generated_sql
-                        error_feedback = str(validation_error)
-                        continue
-                    else:
-                        # Out of retries, record failure and raise
-                        self.circuit_breaker.record_failure()
-                        logger.error(
-                            "SQL validation failed after all retries",
-                            extra={
-                                "request_id": request_id,
-                                "attempts": attempt + 1,
-                                "error": str(validation_error),
-                            },
-                        )
-                        raise
-
-                # Validation successful
-                self.circuit_breaker.record_success()
-                logger.info(
-                    "SQL generated and validated successfully",
-                    extra={
-                        "request_id": request_id,
-                        "attempts": attempt + 1,
-                    },
-                )
-
-                # Build validation result
-                validation_result = ValidationResult(
-                    is_valid=True,
-                    is_select=True,
-                    allows_data_modification=False,
-                    uses_blocked_functions=[],
-                    error_message=None,
-                )
-
-                return generated_sql, validation_result, tokens_used
-
-            except (LLMError, SecurityViolationError, SQLParseError):
-                # Re-raise known errors
-                raise
-            except Exception as e:
-                # Unexpected error during generation
-                self.circuit_breaker.record_failure()
-                logger.exception(
-                    "Unexpected error during SQL generation",
-                    extra={"request_id": request_id},
-                )
-                raise LLMError(
-                    message=f"SQL generation failed unexpectedly: {e!s}",
-                    details={"error_type": type(e).__name__},
-                ) from e
-
-        # Should not reach here, but just in case
-        self.circuit_breaker.record_failure()
-        raise LLMError(
-            message="SQL generation failed after all retry attempts",
-            details={"max_retries": max_retries},
+        Returns:
+            str: Error feedback for next retry.
+        """
+        logger.warning(
+            "SQL validation failed, retrying with feedback",
+            extra={
+                "request_id": request_id,
+                "attempt": attempt + 1,
+                "error": str(validation_error),
+            },
         )
+        return str(validation_error)
+
+    def _handle_validation_failure(
+        self,
+        validation_error: SecurityViolationError | SQLParseError,
+        attempt: int,
+        request_id: str,
+    ) -> None:
+        """Handle final validation failure after all retries.
+
+        Args:
+            validation_error: The validation error that occurred.
+            attempt: Current attempt number (0-indexed).
+            request_id: Request ID for tracking.
+        """
+        self.circuit_breaker.record_failure()
+        logger.error(
+            "SQL validation failed after all retries",
+            extra={
+                "request_id": request_id,
+                "attempts": attempt + 1,
+                "error": str(validation_error),
+            },
+        )
+
+    def _handle_unexpected_error(self, error: Exception, request_id: str) -> None:
+        """Handle unexpected error during SQL generation.
+
+        Args:
+            error: The unexpected error that occurred.
+            request_id: Request ID for tracking.
+
+        Raises:
+            LLMError: Wrapped unexpected error.
+        """
+        self.circuit_breaker.record_failure()
+        logger.exception(
+            "Unexpected error during SQL generation",
+            extra={"request_id": request_id},
+        )
+        raise LLMError(
+            message=f"SQL generation failed unexpectedly: {error!s}",
+            details={"error_type": type(error).__name__},
+        ) from error
 
     async def _validate_results_safely(
         self,
