@@ -232,9 +232,9 @@ class SQLExecutor:
         """
         try:
             # Set statement timeout (PostgreSQL expects milliseconds)
-            # This one CAN use parameterized query
+            # PostgreSQL SET commands don't support parameterized queries
             timeout_ms = int(timeout * 1000)
-            await conn.execute("SET statement_timeout = $1", timeout_ms)
+            await conn.execute(f"SET statement_timeout = {timeout_ms}")
 
             # Set safe search_path to prevent schema injection
             search_path = self.security_config.safe_search_path
