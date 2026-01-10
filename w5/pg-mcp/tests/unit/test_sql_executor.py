@@ -249,12 +249,7 @@ class TestSQLExecutor:
         execute_commands = [str(call[0][0]) for call in execute_calls]
 
         # Check timeout was set (15 seconds = 15000 ms)
-        # statement_timeout uses parameterized query, so check for the command
-        assert any("SET statement_timeout" in cmd for cmd in execute_commands)
-        # Verify the parameter value was 15000
-        timeout_call = [call for call in execute_calls if "statement_timeout" in str(call[0][0])]
-        assert len(timeout_call) > 0
-        assert timeout_call[0][0][1] == 15000  # Second argument is the parameter value
+        assert any("SET statement_timeout = 15000" in cmd for cmd in execute_commands)
 
         # Check search_path was set with quoted identifier
         assert any("SET search_path" in cmd and '"public"' in cmd for cmd in execute_commands)
