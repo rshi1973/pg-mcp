@@ -6,7 +6,7 @@
 
 - Python 3.14+
 - PostgreSQL 数据库（运行中且可访问）
-- OpenAI API 密钥
+- Google Gemini API 密钥
 
 ## 安装步骤
 
@@ -42,8 +42,9 @@ DATABASE_NAME=your_database
 DATABASE_USER=your_user
 DATABASE_PASSWORD=your_password
 
-# OpenAI 配置
-OPENAI_API_KEY=sk-your-api-key-here
+# Google Gemini 配置
+GEMINI_API_KEY=your-gemini-api-key-here
+GEMINI_MODEL=gemini-2.0-flash-exp
 ```
 
 ### 步骤 3: 测试连接
@@ -74,7 +75,7 @@ uv run python -m pg_mcp
 ```json
 {
   "mcpServers": {
-    "postgres": {
+    "pg-mcp": {
       "command": "uv",
       "args": [
         "--directory",
@@ -89,12 +90,15 @@ uv run python -m pg_mcp
         "DATABASE_NAME": "your_database",
         "DATABASE_USER": "your_user",
         "DATABASE_PASSWORD": "your_password",
-        "OPENAI_API_KEY": "sk-your-api-key"
+        "GEMINI_API_KEY": "your-gemini-api-key-here",
+        "GEMINI_MODEL": "gemini-2.0-flash-exp"
       }
     }
   }
 }
 ```
+
+**注意**: 也可以使用 `python -m pg_mcp.server` 直接启动服务器模块，两种方式都能正常工作。
 
 **重启 Claude Desktop** 并尝试：
 
@@ -153,10 +157,10 @@ docker-compose logs -f pg-mcp
 - 验证 `.env` 中的凭据是否正确
 - 检查防火墙规则
 
-### "OpenAI API error" OpenAI API 错误
+### "Google Gemini API error" Google Gemini API 错误
 
 - 验证 API 密钥是否正确
-- 检查 API 密钥是否有余额：https://platform.openai.com/usage
+- 检查 API 密钥是否有余额和配额
 - 检查网络连接
 
 ### "Port already in use" 端口已被占用

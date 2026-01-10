@@ -7,7 +7,7 @@ responses containing query results or errors.
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class ReturnType(StrEnum):
@@ -112,7 +112,7 @@ class QueryResult(BaseModel):
 
     @field_validator("row_count", mode="before")
     @classmethod
-    def validate_row_count(cls, v: int, info: Any) -> int:
+    def validate_row_count(cls, v: int, info: ValidationInfo) -> int:
         """Ensure row_count matches length of rows.
 
         Args:
@@ -126,7 +126,7 @@ class QueryResult(BaseModel):
             ValueError: If row_count does not match length of rows.
         """
         # If rows exist in values, validate consistency
-        if hasattr(info, "data") and "rows" in info.data:
+        if info.data and isinstance(info.data, dict) and "rows" in info.data:
             rows = info.data["rows"]
             actual_count = len(rows)
             if v != actual_count:
@@ -185,7 +185,7 @@ class QueryResponse(BaseModel):
 
     @field_validator("data")
     @classmethod
-    def validate_data(cls, v: QueryResult | None, info: Any) -> QueryResult | None:
+    def validate_data(cls, v: QueryResult | None, info: ValidationInfo) -> QueryResult | None:
         """Ensure data is present only when success is True and executed.
 
         Args:
@@ -194,8 +194,11 @@ class QueryResponse(BaseModel):
 
         Returns:
             QueryResult | None: Validated data field.
+
+        Raises:
+            ValueError: If data is present when success is False or both data and error are present.
         """
-        if hasattr(info, "data"):
+        if info.data and isinstance(info.data, dict):
             success = info.data.get("success", False)
             error = info.data.get("error")
             if not success and v is not None:
@@ -206,7 +209,7 @@ class QueryResponse(BaseModel):
 
     @field_validator("error")
     @classmethod
-    def validate_error(cls, v: ErrorDetail | None, info: Any) -> ErrorDetail | None:
+    def validate_error(cls, v: ErrorDetail | None, info: ValidationInfo) -> ErrorDetail | None:
         """Ensure error is present when success is False.
 
         Args:
@@ -215,8 +218,11 @@ class QueryResponse(BaseModel):
 
         Returns:
             ErrorDetail | None: Validated error field.
+
+        Raises:
+            ValueError: If error is missing when success is False.
         """
-        if hasattr(info, "data"):
+        if info.data and isinstance(info.data, dict):
             success = info.data.get("success", False)
             if not success and v is None:
                 raise ValueError("Error must be present when success is False")

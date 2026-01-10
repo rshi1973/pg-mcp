@@ -27,7 +27,6 @@ from pg_mcp.services.orchestrator import (
     QueryOrchestrator,
 )
 from pg_mcp.services.result_validator import ResultValidator
-from pg_mcp.services.sql_executor import SQLExecutor
 from pg_mcp.services.sql_generator import SQLGenerator
 from pg_mcp.services.sql_validator import SQLValidator
 
@@ -291,7 +290,7 @@ async def _shutdown_server(
 
 
 @asynccontextmanager
-async def lifespan(_app: FastMCP) -> AsyncIterator[None]:  # type: ignore[type-arg]
+async def lifespan(_app: FastMCP) -> AsyncIterator[None]:
     """Lifespan context manager for server initialization and cleanup.
 
     This function manages the complete lifecycle of the MCP server:
@@ -473,7 +472,10 @@ async def query(
 
     try:
         # Apply rate limiting
-        async with _rate_limiter.for_queries(timeout=_settings.resilience.rate_limit_timeout if _settings else 30.0):
+        rate_limit_timeout = (
+            _settings.resilience.rate_limit_timeout if _settings else 30.0
+        )
+        async with _rate_limiter.for_queries(timeout=rate_limit_timeout):
             response: QueryResponse = await _orchestrator.execute_query(request)
             result = response.to_dict()
             # Ensure tokens_used is always present
@@ -483,12 +485,17 @@ async def query(
     except TimeoutError:
         # Rate limiter timeout
         logger.warning("Rate limiter timeout exceeded")
+        max_concurrent = (
+            _settings.resilience.max_concurrent if _settings else 10
+        )
         return {
             "success": False,
             "error": {
                 "code": "RATE_LIMIT_TIMEOUT",
-                "message": "Too many concurrent requests. Please try again later.",
-                "details": {"max_concurrent": _settings.resilience.max_concurrent if _settings else 10},
+                "message": (
+                    "Too many concurrent requests. Please try again later."
+                ),
+                "details": {"max_concurrent": max_concurrent},
             },
             "tokens_used": 0,
         }

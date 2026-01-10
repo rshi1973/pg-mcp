@@ -57,7 +57,7 @@ class SQLGenerator:
     ) -> str:
         """Generate SQL statement from natural language question.
 
-        This method sends the question and database schema to OpenAI's API
+        This method sends the question and database schema to Google's Gemini API
         and extracts the generated SQL query from the response. It supports
         retry scenarios by accepting previous failed attempts and error feedback.
 
@@ -69,7 +69,7 @@ class SQLGenerator:
             error_feedback: Error message from previous attempt (for retry).
 
         Returns:
-            str: Generated SQL query (without trailing semicolon).
+            str: Generated SQL query with trailing semicolon (standardized format).
 
         Raises:
             LLMError: If generation fails or response is invalid.

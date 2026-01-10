@@ -57,6 +57,12 @@ dmypy.json
 .env.local
 .env.*.local
 
+# Claude Desktop Configuration (may contain sensitive data)
+claude_desktop_config.json
+claude_desktop_config_full.json
+# Keep template files
+!claude_desktop_config.json.template
+
 # Logs
 *.log
 logs/

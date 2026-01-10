@@ -4,6 +4,8 @@ This module provides the ExecutorRegistry class that manages per-database
 SQL executor instances with associated circuit breakers for fault tolerance.
 """
 
+from typing import Any
+
 from asyncpg import Pool
 
 from pg_mcp.config.settings import DatabaseConfig, ResilienceConfig, SecurityConfig
@@ -149,8 +151,6 @@ class ExecutorRegistry:
         Raises:
             DatabaseError: If circuit breaker is open or execution fails.
         """
-        from typing import Any
-
         circuit_breaker = self.get_circuit_breaker(database)
 
         # Check if circuit breaker allows request
