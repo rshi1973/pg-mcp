@@ -127,6 +127,9 @@ class SQLValidator:
         Args:
             sql: SQL query string to validate.
 
+        Returns:
+            None
+
         Raises:
             SQLParseError: If SQL cannot be parsed.
             SecurityViolationError: If SQL violates security constraints.

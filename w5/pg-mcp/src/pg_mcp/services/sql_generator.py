@@ -177,12 +177,13 @@ class SQLGenerator:
 
         # Strategy 1: Match ```sql ... ``` or ``` ... ``` code blocks
         code_block_pattern = r"```(?:sql)?\s*\n?(.*?)\n?```"
-        matches = re.findall(code_block_pattern, content, re.DOTALL | re.IGNORECASE)
+        matches: list[str] = re.findall(code_block_pattern, content, re.DOTALL | re.IGNORECASE)
 
         if matches:
             sql = matches[0].strip()
-            # Remove trailing semicolon for consistency
-            return sql.rstrip(";") + ";"
+            # Ensure exactly one trailing semicolon
+            sql = sql.rstrip(";")
+            return sql + ";"
 
         # Strategy 2: Find SELECT/WITH statements in plain text
         sql_pattern = r"((?:WITH|SELECT)\s+.*?)(?:;|$)"
@@ -190,10 +191,12 @@ class SQLGenerator:
 
         if matches:
             sql = matches[0].strip()
-            return sql.rstrip(";") + ";"
+            sql = sql.rstrip(";")
+            return sql + ";"
 
         # Strategy 3: Check if entire content looks like SQL
         if content.upper().startswith(("SELECT", "WITH")):
-            return content.rstrip(";") + ";"
+            sql = content.rstrip(";")
+            return sql + ";"
 
         return None
