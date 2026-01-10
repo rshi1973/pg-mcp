@@ -160,6 +160,11 @@ class QueryOrchestrator:
 
         Returns:
             QueryResponse: Complete response with SQL, results, or error information.
+                Note: The response.data.row_count represents the number of rows
+                actually returned, which may be less than the total number of rows
+                in the database if SECURITY_MAX_ROWS limit is applied. The total
+                number of rows in the database (before limiting) is logged but
+                not included in the response.
 
         Example:
             >>> response = await orchestrator.execute_query(
@@ -313,11 +318,17 @@ class QueryOrchestrator:
         )
 
         execution_time_ms = self._get_current_time_ms() - start_time
+        
+        # Log execution results with clear distinction between returned and total rows
+        returned_rows = len(results)
+        rows_truncated = total_count > returned_rows
         logger.info(
             "SQL executed successfully",
             extra={
                 "request_id": request_id,
-                "row_count": total_count,
+                "returned_rows": returned_rows,  # Number of rows actually returned
+                "total_rows_in_db": total_count,  # Total rows in database (before limiting)
+                "rows_truncated": rows_truncated,  # Whether results were limited
                 "execution_time_ms": execution_time_ms,
             },
         )

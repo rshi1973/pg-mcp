@@ -121,10 +121,21 @@ class QueryResult(BaseModel):
 
         Returns:
             int: Validated row count.
+
+        Raises:
+            ValueError: If row_count does not match length of rows.
         """
-        # If rows exist in values, use its length
+        # If rows exist in values, validate consistency
         if hasattr(info, "data") and "rows" in info.data:
-            return len(info.data["rows"])
+            rows = info.data["rows"]
+            actual_count = len(rows)
+            if v != actual_count:
+                raise ValueError(
+                    f"row_count ({v}) does not match length of rows ({actual_count}). "
+                    f"row_count should represent the number of rows actually returned. "
+                    f"Use len(rows) for row_count."
+                )
+            return actual_count
         return v
 
     def to_dict(self) -> dict[str, Any]:
